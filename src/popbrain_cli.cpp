@@ -18,11 +18,14 @@ static void print_usage(const char* prog) {
               << "  " << prog << " --benchmark <memory.synapse> [num_queries]\n"
               << "  " << prog << " --create <memory.synapse> [--dim <dim>] [--clusters <C>]\n"
               << "  " << prog << " --populate <memory.synapse> <count> [--dim <dim>] [--clusters <C>]\n"
+              << "  " << prog << " --memorize <memory.synapse> --key <text> --value <text> [--dim <dim>]\n"
               << "\nCommands:\n"
               << "  --info <path>           Inspect binary header, Voronoi geometry, and memory count\n"
               << "  --benchmark <path>      Run C++ retrieval latency and lateral inhibition benchmarks\n"
               << "  --create <path>         Create a clean initialized .synapse memory checkpoint\n"
               << "  --populate <path> <cnt> Populate with N transitions and build Voronoi index\n"
+              << "  --memorize <path> ...   Ingest and link text key-value transition into .synapse file\n"
+              << "  --learn <path> ...      Alias for --memorize\n"
               << "  --help, -h              Show this help message\n"
               << "========================================================================\n";
 }
@@ -206,6 +209,93 @@ static int populate_checkpoint(const std::string& path, int count, int dim, int 
     return 0;
 }
 
+static void embed_text_semantic(const std::string& text, float* out, int32_t dim) {
+    std::fill(out, out + dim, 0.0f);
+    if (text.empty() || dim <= 0) return;
+
+    uint64_t h = 14695981039346656037ULL;
+    for (size_t i = 0; i < text.size(); ++i) {
+        h ^= (uint64_t)(unsigned char)text[i];
+        h *= 1099511628211ULL;
+        size_t idx = (size_t)(h % dim);
+        float sign = ((h >> 32) & 1) ? 1.0f : -1.0f;
+        float decay = 1.0f / (1.0f + 0.005f * (float)i);
+        out[idx] += sign * decay;
+
+        if (i >= 2) {
+            uint64_t tri = ((uint64_t)(unsigned char)text[i-2] << 16) |
+                           ((uint64_t)(unsigned char)text[i-1] << 8)  |
+                           ((uint64_t)(unsigned char)text[i]);
+            size_t idx_tri = (size_t)((tri * 2654435761ULL) % dim);
+            out[idx_tri] += 1.5f * decay;
+        }
+    }
+    double sum_sq = 0.0;
+    for (int32_t d = 0; d < dim; ++d) {
+        sum_sq += out[d] * out[d];
+    }
+    float norm = std::sqrt(std::max(1e-12, sum_sq));
+    for (int32_t d = 0; d < dim; ++d) {
+        out[d] /= norm;
+    }
+}
+
+static int memorize_association(const std::string& path, const std::string& key, const std::string& val, int dim, int clusters) {
+    popbrain_config cfg = {};
+    cfg.hidden_dim = dim;
+    cfg.num_clusters = clusters;
+    cfg.nprobe = 4;
+    cfg.inhibition_threshold = 0.82f;
+    cfg.margin_threshold = 0.015f;
+    cfg.modulation_strength = 0.25f;
+    cfg.enable_spike_sparsity = 1;
+    cfg.spike_threshold = 0.04f;
+    cfg.use_cuda = 0;
+    cfg.device_id = 0;
+
+    popbrain_synapse_context* ctx = popbrain_init(&cfg);
+    if (!ctx) {
+        std::cerr << "[ERROR] Failed to allocate context." << std::endl;
+        return 1;
+    }
+
+    std::ifstream check_file(path, std::ios::binary);
+    bool exists = check_file.good();
+    check_file.close();
+
+    if (exists) {
+        if (popbrain_load_checkpoint(ctx, path.c_str()) != 0) {
+            std::cerr << "[ERROR] Failed to load existing checkpoint: " << path << std::endl;
+            popbrain_free(ctx);
+            return 1;
+        }
+        dim = popbrain_get_hidden_dim(ctx);
+    }
+
+    std::vector<float> k(dim);
+    std::vector<float> v(dim);
+    embed_text_semantic(key, k.data(), dim);
+    embed_text_semantic(val, v.data(), dim);
+
+    popbrain_ingest_transition(ctx, k.data(), v.data());
+    popbrain_build_index(ctx, 3);
+
+    if (popbrain_save_checkpoint(ctx, path.c_str()) != 0) {
+        std::cerr << "[ERROR] Failed to save updated checkpoint to: " << path << std::endl;
+        popbrain_free(ctx);
+        return 1;
+    }
+
+    int total = popbrain_get_memory_count(ctx);
+    std::cout << "[+] Successfully memorized transition into: " << path << "\n"
+              << "    * Key prompt:   \"" << key << "\"\n"
+              << "    * Value target: \"" << val << "\"\n"
+              << "    * Total memories stored: " << total << " (dim=" << dim << ")\n";
+
+    popbrain_free(ctx);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         print_usage(argv[0]);
@@ -258,6 +348,28 @@ int main(int argc, char** argv) {
             else if (arg == "--clusters" && i + 1 < argc) clusters = std::atoi(argv[++i]);
         }
         return populate_checkpoint(path, count, dim, clusters);
+    } else if (cmd == "--memorize" || cmd == "--learn") {
+        if (argc < 3) {
+            std::cerr << "Usage: " << argv[0] << " " << cmd << " <memory.synapse> --key <prompt> --value <answer> [--dim <dim>]" << std::endl;
+            return 1;
+        }
+        std::string path = argv[2];
+        std::string key = "";
+        std::string val = "";
+        int dim = 2048;
+        int clusters = 128;
+        for (int i = 3; i < argc; ++i) {
+            std::string arg = argv[i];
+            if (arg == "--key" && i + 1 < argc) key = argv[++i];
+            else if (arg == "--value" && i + 1 < argc) val = argv[++i];
+            else if (arg == "--dim" && i + 1 < argc) dim = std::atoi(argv[++i]);
+            else if (arg == "--clusters" && i + 1 < argc) clusters = std::atoi(argv[++i]);
+        }
+        if (key.empty() || val.empty()) {
+            std::cerr << "[ERROR] Both --key and --value must be provided for memorization." << std::endl;
+            return 1;
+        }
+        return memorize_association(path, key, val, dim, clusters);
     } else {
         std::cerr << "Unknown command: " << cmd << std::endl;
         print_usage(argv[0]);

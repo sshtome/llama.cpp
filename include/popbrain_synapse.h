@@ -9,14 +9,18 @@
 extern "C" {
 #endif
 
-#if defined(_WIN32)
-#  if defined(POPBRAIN_BUILD_SHARED)
-#    define POPBRAIN_API __declspec(dllexport)
+#if defined(LLAMA_SHARED) || defined(POPBRAIN_BUILD_SHARED)
+#  if defined(_WIN32)
+#    if defined(LLAMA_BUILD) || defined(POPBRAIN_BUILD_SHARED)
+#      define POPBRAIN_API __declspec(dllexport)
+#    else
+#      define POPBRAIN_API __declspec(dllimport)
+#    endif
 #  else
-#    define POPBRAIN_API __declspec(dllimport)
+#    define POPBRAIN_API __attribute__((visibility("default")))
 #  endif
 #else
-#  define POPBRAIN_API __attribute__((visibility("default")))
+#  define POPBRAIN_API
 #endif
 
 // Opaque synaptic memory context handle

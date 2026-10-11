@@ -8,6 +8,8 @@ echo "========================================================"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$DIR/popbrain_cli" ]; then
     "$DIR/popbrain_cli" "$@"
+elif [ -f "$DIR/build/bin/popbrain_cli" ]; then
+    "$DIR/build/bin/popbrain_cli" "$@"
 elif [ -f "$DIR/build/popbrain_cli" ]; then
     "$DIR/build/popbrain_cli" "$@"
 else

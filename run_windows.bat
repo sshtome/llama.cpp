@@ -10,6 +10,8 @@ echo.
 
 if exist "%~dp0popbrain_cli.exe" (
     "%~dp0popbrain_cli.exe" %*
+) else if exist "%~dp0build\bin\Release\popbrain_cli.exe" (
+    "%~dp0build\bin\Release\popbrain_cli.exe" %*
 ) else if exist "%~dp0build\Release\popbrain_cli.exe" (
     "%~dp0build\Release\popbrain_cli.exe" %*
 ) else (

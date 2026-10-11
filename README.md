@@ -76,43 +76,50 @@ Standard Large Language Models (LLMs) suffer from fundamental engineering constr
 
 ---
 
-## Pure C++ Architecture (v1.5.0 - Zero Python)
+## Pure C++ Architecture (v1.6.0 - Zero Python, Direct llama.cpp Inference Integration)
 
-Version 1.5.0 completely removes the Python runtime from the repository and delivers a 100% native C++ solution:
-- **Zero Python Runtime:** No Python, pip, PyTorch, or virtual environments required. Everything is compiled to native machine code.
-- **Native Executable Binaries in Releases:** Pre-compiled standalone binaries (`popbrain_cli.exe` for Windows x64 and `popbrain_cli-linux` for Linux x64) are published directly to GitHub Releases alongside complete `.zip` and `.tar.gz` distribution packages.
-- **Microsecond Synaptic Latency:** In-flight retrieval runs in $< 80\ \mu\text{s}$ per token directly in native C++ with 100% false-positive distractor rejection via GABAergic lateral inhibition.
+Version 1.6.0 delivers complete, native C++ integration of the PopBrain Synaptic Memory engine directly into `llama.cpp` core inference (`llama_decode`, `llama_context`, `llama-cli`, and `llama-server`):
+- **Zero Python Runtime:** No Python, pip, PyTorch, or virtual environments required. 100% native C++ machine code.
+- **Direct Core Inference Hook (`llama_decode`):** During each autoregressive decoding step, the model's normalized hidden representations are evaluated in-flight via Spherical Voronoi (IVF) routing, GABAergic lateral inhibition, and LIF spike activation sparsity gating.
+- **Console Knowledge Memorization:** Memorize factual associations directly from the terminal without backpropagation:
+  ```bash
+  popbrain_cli.exe --memorize my_knowledge.synapse --key "Столица Франции" --value "Париж" --dim 2048
+  ```
+- **Native CLI & Server Memory Flags (`--memory` / `--synapse`):** Launch `llama-server` or `llama-cli` with the `.synapse` memory checkpoint:
+  ```bash
+  llama-server.exe -m Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf --memory my_knowledge.synapse --port 8088
+  llama-cli.exe -m Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf --memory my_knowledge.synapse -p "Столица Франции"
+  ```
+- **Microsecond Synaptic Latency:** In-flight retrieval runs in $< 80\ \mu\text{s}$ per token directly in native C++ with 100% false-positive distractor rejection.
 - **Binary Interoperability:** Uses the `POPSYN01` binary format with spherical Voronoi (IVF) index clustering, SNN event-driven spike activation gating, and O(1) contiguous RAM/VRAM layout.
 
 ---
 
 ## Native C++ CLI Tool (`popbrain_cli.exe`)
 
-The compiled executable interacts directly with `.synapse` binary checkpoints:
+The compiled executable manages `.synapse` binary checkpoints:
 
 ```bash
-# 1. Inspect binary header, Voronoi geometry, and memory count
-popbrain_cli.exe --info assets/my_knowledge.synapse
+# 1. Memorize new knowledge directly from console (O(1) in-flight association)
+popbrain_cli.exe --memorize my_knowledge.synapse --key "Столица Франции" --value "Париж" --dim 2048
 
-# 2. Benchmark per-token latency and lateral inhibition suppression
-popbrain_cli.exe --benchmark assets/my_knowledge.synapse 1000
+# 2. Inspect binary header, Voronoi geometry, and memory count
+popbrain_cli.exe --info my_knowledge.synapse
 
-# 3. Initialize an empty .synapse checkpoint with custom dimensionality
+# 3. Benchmark per-token latency and lateral inhibition suppression
+popbrain_cli.exe --benchmark my_knowledge.synapse 1000
+
+# 4. Initialize an empty .synapse checkpoint with custom dimensionality
 popbrain_cli.exe --create new_mem.synapse --dim 2048 --clusters 128
 
-# 4. Ingest transitions and build Spherical Voronoi index directly in C++
+# 5. Populate synthetic transitions and build Spherical Voronoi index
 popbrain_cli.exe --populate populated_mem.synapse 500 --dim 2048 --clusters 128
 ```
 
 On Windows, `run_windows.bat` automatically invokes the native executable:
 ```bat
-run_windows.bat --info assets/popbrain_ilya_3b.synapse
-run_windows.bat --benchmark assets/popbrain_ilya_3b.synapse 500
-```
-
-On Linux:
-```bash
-./run_linux.sh --info assets/popbrain_ilya_3b.synapse
+run_windows.bat --memorize my_knowledge.synapse --key "..." --value "..."
+run_windows.bat --info my_knowledge.synapse
 ```
 
 ---
@@ -121,12 +128,14 @@ On Linux:
 
 | Flag | Argument | Description |
 | :--- | :--- | :--- |
+| `--memorize`, `--learn` | `<path.synapse> --key <text> --value <text>` | Ingest and link a text key-value association into the `.synapse` checkpoint. |
 | `--info` | `<path.synapse>` | Inspect binary header, hidden dimensionality, Voronoi cell count, and stored associations. |
 | `--benchmark` | `<path.synapse> [N]` | Run $N$ simulated hidden state sweeps, measure latency ($\mu\text{s}$/token), and verify lateral inhibition. |
 | `--create` | `<path.synapse>` | Create a clean, initialized `.synapse` binary checkpoint. |
 | `--populate` | `<path.synapse> <N>` | Ingest $N$ transitions and construct Spherical Voronoi IVF index in RAM. |
 | `--dim` | `<integer>` | Set hidden representation dimensionality (default: `2048`, e.g. for Qwen2.5-3B). |
 | `--clusters` | `<integer>` | Number of Voronoi cortical partition cells (default: `128`). |
+| `--memory`, `--synapse` | `<path.synapse>` | Flag for `llama-cli` and `llama-server` to load synaptic memory and modulate inference. |
 
 ---
 
@@ -297,6 +306,139 @@ ALL POPBRAIN SYNAPSE C++ TESTS PASSED SUCCESSFULLY!
 
 ---
 
-## License
+## Upstream llama.cpp Core Engine
 
-This project is licensed under the [MIT License](LICENSE).
+The base of this repository is [llama.cpp](https://github.com/ggml-org/llama.cpp), augmented with PopBrain Synaptic In-Flight Modulation.
+
+![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
+
+<div align="center">
+
+<b>LLM inference in C/C++</b>
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Release](https://img.shields.io/github/v/release/ggml-org/llama.cpp?filter=v*&color=brightgreen)](https://github.com/ggml-org/llama.cpp/releases?q=tag:v0)
+[![Nightly](https://img.shields.io/github/v/release/ggml-org/llama.cpp?label=nightly&filter=b*&color=orange)](https://github.com/ggml-org/llama.cpp/releases?q=b)
+[![Server](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/server.yml?label=Server)](https://github.com/ggml-org/llama.cpp/actions/workflows/server.yml)
+[![Docker](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/docker.yml?label=Docker)](https://github.com/ggml-org/llama.cpp/actions/workflows/docker.yml)
+[![Winget](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/winget.yml?label=Winget)](https://github.com/ggml-org/llama.cpp/actions/workflows/winget.yml)
+
+[ggml](https://github.com/ggml-org/ggml) / [ops](https://github.com/ggml-org/llama.cpp/blob/master/docs/ops.md) / [maintainer PRs](https://github.com/ggml-org/llama.cpp/issues?q=is%3Apr%20is%3Aopen%20draft%3AFalse%20(author%3Argerganov%20OR%20author%3AKitaitiMakoto%20OR%20author%3Adanbev%20OR%20author%3Aaldehir%20OR%20author%3Amax-krasnyansky%20OR%20author%3ACISC%20OR%20author%3Aggerganov%20OR%20author%3Aam17an%20OR%20author%3Ajhen0409%20OR%20author%3Abartowski1182%20OR%20author%3Anikwen%20OR%20author%3Ahipudding%20OR%20author%3Aravi9%20OR%20author%3AServeurpersoCom%20OR%20author%3Apwilkin%20OR%20author%3Areeselevine%20OR%20author%3Angxson%20OR%20author%3Ajeffbolznv%20OR%20author%3Amarty1885%20OR%20author%3A0cc4m%20OR%20author%3ATitaniumtown%20OR%20author%3Aangt%20OR%20author%3AIMbackK%20OR%20author%3Aarthw%20OR%20author%3AJohannesGaessler%20OR%20author%3AORippler%20OR%20author%3Aruixiang63%20OR%20author%3Axctan%20OR%20author%3Aallozaur%20OR%20author%3Ayomaytk%20OR%20author%3Aaendk%20OR%20author%3Awine99%20OR%20author%3Agaugarg-nv%20OR%20author%3Ataronaeo%20OR%20author%3Aforforever73%20OR%20author%3Alhez%20OR%20author%3Anetrunnereve%20OR%20author%3Afairydreaming)%20sort%3Aupdated-desc) / [dev stats](https://github.com/ggml-org/llama.cpp-dev) / [lib llama API](https://github.com/ggml-org/llama.cpp/issues/9289) / [llama-server REST API](https://github.com/ggml-org/llama.cpp/issues/9291)
+
+</div>
+
+## Quick start
+
+A few options to get `llama.cpp` installed on your machine:
+
+```bash
+# curl
+curl -LsSf https://llama.app/install.sh | sh
+
+# powershell
+irm https://llama.app/install.ps1 | iex
+```
+
+- Visit https://llama.app and follow the instructions
+- Run with Docker - see our [Docker documentation](docs/docker.md)
+- Download pre-built binaries from the [releases page](https://github.com/ggml-org/llama.cpp/releases)
+- Build from source by cloning this repository - check out [our build guide](docs/build.md)
+
+Once installed:
+
+```sh
+# Download and run a model directly from Hugging Face
+llama cli -hf ggml-org/Qwen3.5-0.8B-GGUF
+
+# Launch OpenAI-compatible API server
+llama serve -hf ggml-org/Qwen3.5-0.8B-GGUF
+```
+
+<table align="center">
+    <tr>
+        <td align="center" width=50%>
+            <img width="1310" height="888" alt="VLM session with `llama cli`" src="https://github.com/user-attachments/assets/88726b48-1713-48aa-a525-95a02e78afc4" />
+            <i>VLM session with <b>llama cli</b></i>
+        </td>
+        <td align="center">
+            <img width="1392" height="958" alt="Built-in web UI against `llama serve` running Qwen 3.6" src="https://github.com/user-attachments/assets/b402f972-2e32-4def-8771-8d849f08cf2e" />
+            <i>Built-in web UI against <b>llama serve</b></i>
+        </td>
+    </tr>
+<table>
+
+## Description
+
+The main goal of `llama.cpp` is to enable LLM (and VLM) inference with minimal setup and state-of-the-art performance on
+a wide range of hardware - locally and in the cloud.
+
+- Plain C/C++ implementation without any dependencies
+- Apple silicon is a first-class citizen - optimized via ARM NEON, Accelerate and Metal frameworks
+- AVX, AVX2, AVX512 and AMX support for x86 architectures
+- RVV, ZVFH, ZFH, ZICBOP and ZIHINTPAUSE support for RISC-V architectures
+- 1.5-bit, 2-bit, 3-bit, 4-bit, 5-bit, 6-bit, and 8-bit integer quantization for faster inference and reduced memory use
+- Custom CUDA kernels for running LLMs on NVIDIA GPUs (support for AMD GPUs via HIP and Moore Threads GPUs via MUSA)
+- Vulkan and SYCL backend support
+- CPU+GPU hybrid inference to partially accelerate models larger than the total VRAM capacity
+
+The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-org/ggml) library.
+
+## Supported backends
+
+| Backend | Target devices |
+| --- | --- |
+| [BLAS](docs/build.md#blas-build) | All |
+| [BLIS](docs/backend/BLIS.md) | All |
+| [CANN](docs/build.md#cann) | Ascend NPU |
+| [CUDA](docs/build.md#cuda) | Nvidia GPU |
+| [HIP](docs/build.md#hip) | AMD GPU |
+| [Hexagon](docs/backend/snapdragon/README.md) | Snapdragon |
+| [IBM zDNN](docs/backend/zDNN.md) | IBM Z & LinuxONE |
+| [MUSA](docs/build.md#musa) | Moore Threads GPU |
+| [Metal](docs/build.md#metal-build) | Apple Silicon |
+| [OpenCL](docs/backend/OPENCL.md) | Adreno GPU |
+| [OpenVINO [In Progress]](docs/backend/OPENVINO.md) | Intel CPUs, GPUs, and NPUs |
+| [RPC](https://github.com/ggml-org/llama.cpp/tree/master/tools/rpc) | All |
+| [SYCL](docs/backend/SYCL.md) | Intel GPU |
+| [VirtGPU](docs/backend/VirtGPU.md) | VirtGPU APIR |
+| [Vulkan](docs/build.md#vulkan) | GPU |
+| [WebGPU](docs/build.md#webgpu) | All |
+| [ZenDNN](docs/build.md#zendnn) | AMD CPU |
+
+## Documentation
+
+#### Tools
+
+- [cli](tools/cli/README.md)
+- [completion](tools/completion/README.md)
+- [server](tools/server/README.md)
+- [GBNF grammars](grammars/README.md)
+
+#### Development
+
+- [How to build](docs/build.md)
+- [Running on Docker](docs/docker.md)
+- [Build on Android](docs/android.md)
+- [Multi-GPU usage](docs/multi-gpu.md)
+- [Performance troubleshooting](docs/development/token_generation_performance_tips.md)
+- [GGML tips & tricks](https://github.com/ggml-org/llama.cpp/wiki/GGML-Tips-&-Tricks)
+- [XCFramework](docs/xcframework.md)
+- [Completions](docs/completions.md)
+- [Models](docs/models.md)
+- [Release process](docs/release.md)
+
+## Contributing
+
+- Contributors can open PRs
+- Collaborators will be invited based on contributions
+- Maintainers can push to branches in the `llama.cpp` repo and merge PRs into the `master` branch
+- Any help with managing issues, PRs and projects is very appreciated!
+- Read the [CONTRIBUTING.md](CONTRIBUTING.md) for more information
+
+## Acknowledgements
+
+- [yhirose/cpp-httplib](https://github.com/yhirose/cpp-httplib) - Single-header HTTP server, used by `llama-server` - MIT license
+- [nothings/stb](https://github.com/nothings/stb) - Single-header image format decoder, used by multimodal subsystem - Public domain
+- [nlohmann/json](https://github.com/nlohmann/json) - Single-header JSON library, used by various tools/examples - MIT License
+- [mackron/miniaudio](https://github.com/mackron/miniaudio) - Single-header audio format decoder, used by multimodal subsystem - Public domain
+- [sheredom/subprocess.h](https://github.com/sheredom/subprocess.h) - Single-header process launching solution for C and C++ - Public domain
