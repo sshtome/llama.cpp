@@ -25,19 +25,8 @@ jobs:
       with:
         cmake-version: '3.28.x'
 
-    - name: Configure CMake (Linux)
-      if: runner.os == 'Linux'
-      run: |
-        cmake -B build \
-          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-          -DPOPBRAIN_BUILD_TESTS=ON
-
-    - name: Configure CMake (Windows)
-      if: runner.os == 'Windows'
-      run: |
-        cmake -B build `
-          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} `
-          -DPOPBRAIN_BUILD_TESTS=ON
+    - name: Configure CMake
+      run: cmake -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DPOPBRAIN_BUILD_TESTS=ON
 
     - name: Build Library and Tests
       run: cmake --build build --config ${{ matrix.build_type }} --parallel
