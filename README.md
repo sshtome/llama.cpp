@@ -97,7 +97,71 @@ chmod +x run_linux.sh
 1. Checks and verifies necessary dependencies.
 2. Initializes the model and loads 67,000+ synaptic transitions into VRAM.
 3. Automatically launches the interactive Web Chat interface in the default browser at `http://127.0.0.1:8088/chat`.
-4. Opens an OpenAI-compatible API endpoint at `http://127.0.0.1:8088/v1` for LM Studio, Cherry Studio, or custom clients.
+## Command-Line Arguments Reference
+
+All runtime options, hyperparameters, and memorization paths can be configured directly from the command line via `run_windows.bat`, `run_linux.sh`, or `python scripts/run_synaptic_llm.py`:
+
+```bash
+python scripts/run_synaptic_llm.py [OPTIONS]
+# Or using the launcher scripts:
+run_windows.bat [OPTIONS]
+./run_linux.sh [OPTIONS]
+```
+
+### Supported Arguments
+
+| Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--model`, `-m` | `str` | `Qwen2.5-Coder` | Local directory or Hugging Face repository ID (e.g., `Qwen/Qwen2.5-Coder-1.5B-Instruct`, GGUF or PyTorch weights). |
+| `--learn-dir`, `-d` | `str` | `None` | Path to repository or document directory to parse and ingest into synaptic memory (0 backprop) before starting. |
+| `--memory`, `--checkpoint`, `-c` | `str` | `None` | Path to load a pre-existing `.synapse` or `.pt` memory checkpoint. |
+| `--save-memory` | `str` | `None` | Path where the resulting synaptic memory checkpoint will be saved after ingestion or session. |
+| `--spike`, `-s` | `flag` | `False` | Enable SNN Event-Driven Spike Activation Gating ($|h| < V_{\text{th}} \to 0$) for 80%+ structural sparsity. |
+| `--no-spike` | `flag` | `False` | Explicitly disable SNN Spike Activation Gating. |
+| `--spike-th` | `float` | `0.04` | LIF Spike activation threshold $V_{\text{th}}$. Suppresses sub-threshold floating-point noise. |
+| `--modulation-strength`, `--alpha`, `-a` | `float` | `0.25` | Synaptic modulation scaling factor $\alpha$. Controls injection strength of hetero-associative vector. |
+| `--inhibition-th` | `float` | `0.82` | GABAergic lateral inhibition cosine similarity threshold $\theta_{\text{inhib}}$. Unlearned queries yield 0% activation. |
+| `--margin-th` | `float` | `0.015` | Differential margin threshold $\Delta_{\text{margin}} = s_1 - s_2$ to prevent ambiguous distractor collisions. |
+| `--clusters` | `int` | `128` | Number of Spherical Voronoi cortical partitions (IVF clusters) on unit hypersphere $\mathbb{S}^{D-1}$. |
+| `--nprobe` | `int` | `4` | Number of Voronoi cortical cells probed per token query. |
+| `--port`, `-p` | `int` | `8088` | TCP port for OpenAI-compatible API and Web Chat UI. |
+| `--host` | `str` | `127.0.0.1` | Network interface to bind server to (`127.0.0.1` or `0.0.0.0` for LAN). |
+| `--device` | `str` | `auto` | Execution device (`cuda`, `cpu`, or `auto`). |
+| `--batch-size` | `int` | `32` | Batch size of documents encoded concurrently during ingestion. |
+| `--no-ui`, `--headless` | `flag` | `False` | Headless server mode; prevents automatic opening of web browser. |
+
+### Practical CLI Examples
+
+#### 1. Memorize a Code Repository with SNN Spike Gating
+Scan and ingest a local project into memory on-the-fly and save the checkpoint to disk:
+```bash
+# Windows
+run_windows.bat --learn-dir D:\my_project --save-memory my_project.synapse --spike
+
+# Linux
+./run_linux.sh --learn-dir /home/user/my_project --save-memory my_project.synapse --spike
+```
+
+#### 2. Load an Existing Knowledge Base on a Custom Model
+Load a pre-compiled knowledge base and run on a specific model:
+```bash
+python scripts/run_synaptic_llm.py \
+    --model Qwen/Qwen2.5-Coder-1.5B-Instruct \
+    --memory my_project.synapse \
+    --spike \
+    --spike-th 0.04
+```
+
+#### 3. Headless OpenAI API Server for LM Studio or Cherry Studio on LAN
+Run as an OpenAI-compatible API backend listening on all network interfaces:
+```bash
+python scripts/run_synaptic_llm.py \
+    --host 0.0.0.0 \
+    --port 8088 \
+    --memory my_project.synapse \
+    --spike \
+    --no-ui
+```
 
 ---
 

@@ -28,6 +28,10 @@ test_memory.synapse
 .vs/
 .vscode/
 .idea/
-*.user
-Thumbs.db
-[Dd]esktop.ini
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+dist/
+*.zip
+*.tar.gz

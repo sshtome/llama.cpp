@@ -36,14 +36,12 @@ jobs:
       if: matrix.os == 'windows-latest'
       run: |
         mkdir dist
-        mkdir dist/scripts
         cp build/Release/popbrain_synapse.dll dist/
         cp build/Release/popbrain_synapse.lib dist/
         cp build/Release/test_popbrain_synapse.exe dist/
         cp include/popbrain_synapse.h dist/
         cp run_windows.bat dist/
-        cp scripts/run_synaptic_llm.py dist/scripts/
-        cp scripts/popbrain_server.py dist/scripts/
+        Copy-Item -Recurse scripts dist/scripts
         Compress-Archive -Path dist/* -DestinationPath popbrain-synapse-windows-x64.zip
 
     # Package Linux Artifacts
@@ -51,13 +49,11 @@ jobs:
       if: matrix.os == 'ubuntu-latest'
       run: |
         mkdir dist
-        mkdir dist/scripts
         cp build/libpopbrain_synapse.so dist/
         cp build/test_popbrain_synapse dist/
         cp include/popbrain_synapse.h dist/
         cp run_linux.sh dist/
-        cp scripts/run_synaptic_llm.py dist/scripts/
-        cp scripts/popbrain_server.py dist/scripts/
+        cp -r scripts dist/
         tar -czvf popbrain-synapse-linux-x64.tar.gz -C dist .
 
     - name: Upload Windows Asset

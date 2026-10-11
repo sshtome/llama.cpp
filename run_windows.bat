@@ -16,7 +16,6 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo [*] Launching PopBrain Synaptic Server with Web UI...
-python "%~dp0scripts\run_synaptic_llm.py"
+python "%~dp0scripts\run_synaptic_llm.py" %*
 
 pause
