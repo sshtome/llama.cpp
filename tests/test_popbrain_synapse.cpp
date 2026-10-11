@@ -82,6 +82,22 @@ int main() {
     assert(popbrain_get_memory_count(loaded_ctx) == 50);
     std::cout << "   Checkpoint persistence verification (PASSED)" << std::endl;
 
+    // Test SNN Event-Driven Activation Sparsity Gating
+    std::cout << "7. Testing SNN Event-Driven Activation Sparsity Gating..." << std::endl;
+    cfg.enable_spike_sparsity = 1;
+    cfg.spike_threshold = 0.50f;
+    popbrain_synapse_context* snn_ctx = popbrain_init(&cfg);
+    std::vector<float> dense_act(cfg.hidden_dim);
+    for (int d = 0; d < cfg.hidden_dim; ++d) {
+        dense_act[d] = ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f; // Uniform in [-1, 1]
+    }
+    popbrain_diagnostics diag_snn;
+    popbrain_modulate_hidden(snn_ctx, dense_act.data(), &diag_snn);
+    std::cout << "   Observed SNN Activation Sparsity: " << (diag_snn.sparsity_ratio * 100.0f) << "% zeros" << std::endl;
+    assert(diag_snn.sparsity_ratio >= 0.40f); // Sparsity induced
+    std::cout << "   SNN event-driven spike gating (PASSED)" << std::endl;
+
+    popbrain_free(snn_ctx);
     popbrain_free(ctx);
     popbrain_free(loaded_ctx);
 

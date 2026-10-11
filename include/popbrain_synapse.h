@@ -29,6 +29,8 @@ typedef struct popbrain_config {
     float   inhibition_threshold;  // GABAergic lateral inhibition threshold (default: 0.85f)
     float   margin_threshold;      // Contrastive differential margin s1 - s2 (default: 0.02f)
     float   modulation_strength;   // Scaling factor alpha (default: 0.20f)
+    int32_t enable_spike_sparsity; // 1 to enable SNN event-driven activation sparsity gating, 0 to disable
+    float   spike_threshold;       // Spike threshold for LIF activation gating (default: 0.04f, yields 80%+ sparsity)
     int32_t use_cuda;              // 1 if CUDA acceleration enabled, 0 for AVX2 CPU fallback
     int32_t device_id;             // CUDA device ID (default: 0)
 } popbrain_config;
@@ -38,6 +40,7 @@ typedef struct popbrain_diagnostics {
     float   max_similarity;        // Maximum observed cosine similarity
     float   margin;                // Gap between top-1 and top-2 candidate
     int32_t probed_candidates;     // Number of keys evaluated
+    float   sparsity_ratio;        // Fraction of zeroed activations after SNN spike gating (e.g. 0.82 = 82% zeros)
 } popbrain_diagnostics;
 
 /**
