@@ -181,8 +181,9 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str = "popbrain-synaptic-llm"
     messages: List[ChatMessage]
-    max_tokens: Optional[int] = 256
+    max_tokens: Optional[int] = 512
     temperature: Optional[float] = 0.0
+    repetition_penalty: Optional[float] = 1.15
     synaptic_modulation: Optional[bool] = True
 
 
@@ -483,6 +484,7 @@ def chat_ui():
             <div class="input-bar">
                 <input type="text" id="userInput" placeholder="Ask question..." onkeydown="if(event.key==='Enter') send()">
                 <button class="send-btn" onclick="send()">Send</button>
+                <button class="sec-btn" style="border-radius: 8px; padding: 0 16px;" onclick="clearChat()">Reset</button>
             </div>
         </div>
 
@@ -562,11 +564,21 @@ def chat_ui():
                 } catch(e) { st.innerText = 'Error: ' + e; }
             }
 
+            let conversationHistory = [];
+
+            function clearChat() {
+                conversationHistory = [];
+                const chat = document.getElementById('chat');
+                chat.innerHTML = '<div class="msg assistant">PopBrain Synaptic Engine is active. Conversation reset. Ask any question or specify code to verify.</div>';
+            }
+
             async function send() {
                 const inp = document.getElementById('userInput');
                 const text = inp.value.trim();
                 if (!text) return;
                 inp.value = '';
+
+                conversationHistory.push({role: 'user', content: text});
 
                 const chat = document.getElementById('chat');
                 const uMsg = document.createElement('div');
@@ -585,18 +597,22 @@ def chat_ui():
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({
-                            messages: [{role: 'user', content: text}],
+                            messages: conversationHistory,
                             temperature: 0.0,
-                            max_tokens: 256
+                            max_tokens: 512,
+                            repetition_penalty: 1.15
                         })
                     });
                     const data = await res.json();
+                    const reply = (data.choices && data.choices[0] && data.choices[0].message) ? data.choices[0].message.content : 'No response';
+                    conversationHistory.push({role: 'assistant', content: reply});
+
                     const diag = data.synaptic_diagnostics || {};
                     let badge = '';
                     if (diag.fired_steps > 0) {
                         badge = `<div class="synapse-hud">Synapse Active: ${diag.fired_steps} tokens | Sim: ${diag.max_cosine_similarity} | Sparsity: ${(diag.sparsity_ratio * 100).toFixed(1)}%</div><br>`;
                     }
-                    aMsg.innerHTML = badge + data.choices[0].message.content;
+                    aMsg.innerHTML = badge + reply.replace(/\n/g, '<br>');
                 } catch(e) {
                     aMsg.innerText = 'Error: ' + e;
                 }
@@ -613,35 +629,59 @@ def chat_ui():
 def chat_completions(req: ChatCompletionRequest):
     global model, tokenizer, memory, snn_enabled, snn_threshold
 
-    prompt = ""
-    for msg in req.messages:
-        prompt += f"{msg.role.upper()}: {msg.content}\n"
-    prompt += "ASSISTANT: "
+    # 1. Format prompt using model native chat template if available
+    try:
+        msgs = [{"role": msg.role, "content": msg.content} for msg in req.messages]
+        if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
+            prompt = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+        else:
+            prompt = ""
+            for msg in req.messages:
+                prompt += f"<|im_start|>{msg.role}\n{msg.content}<|im_end|>\n"
+            prompt += "<|im_start|>assistant\n"
+    except Exception:
+        prompt = ""
+        for msg in req.messages:
+            prompt += f"<|im_start|>{msg.role}\n{msg.content}<|im_end|>\n"
+        prompt += "<|im_start|>assistant\n"
 
     enc = tokenizer(prompt, return_tensors="pt").to(device)
-    curr_ids = enc.input_ids[0]
-    initial_len = curr_ids.shape[0]
+    initial_len = enc.input_ids.shape[1]
+
+    # 2. Build complete stop token set
+    stop_token_ids = set()
+    if tokenizer.eos_token_id is not None:
+        stop_token_ids.add(tokenizer.eos_token_id)
+    if tokenizer.pad_token_id is not None:
+        stop_token_ids.add(tokenizer.pad_token_id)
+
+    for stop_str in ["<|im_end|>", "<|endoftext|>", "</s>", "<|eot_id|>", "<eos>"]:
+        tid = tokenizer.convert_tokens_to_ids(stop_str)
+        if tid is not None and tid != tokenizer.unk_token_id:
+            stop_token_ids.add(tid)
 
     gen_tokens = []
     fired_steps = 0
     max_similarity = 0.0
     last_sparsity = 0.0
     t0 = time.time()
+    past_kv = None
+    curr_input = enc.input_ids
 
     with torch.no_grad():
-        for _ in range(req.max_tokens):
-            inp = curr_ids.unsqueeze(0)
-            out = model(inp, output_hidden_states=True)
+        for _ in range(req.max_tokens or 512):
+            out = model(curr_input, past_key_values=past_kv, use_cache=True, output_hidden_states=True)
+            past_kv = out.past_key_values
             last_hidden = out.hidden_states[-1][0, -1, :].clone()
 
-            # 1. SNN Event-Driven Spike Activation Gating
+            # A. SNN Event-Driven Spike Activation Gating
             if snn_enabled:
                 mask = torch.abs(last_hidden) >= snn_threshold
                 zeros = (~mask).sum().item()
                 last_sparsity = zeros / last_hidden.numel()
                 last_hidden = last_hidden * mask
 
-            # 2. PopBrain Hetero-Associative Modulation
+            # B. PopBrain Hetero-Associative Modulation
             if req.synaptic_modulation and memory and memory.num_memories > 0:
                 delta_h, sim = memory.compute_synaptic_modulation(last_hidden)
                 if sim > max_similarity:
@@ -655,17 +695,27 @@ def chat_completions(req: ChatCompletionRequest):
             else:
                 logits = out.logits[0, -1, :]
 
+            # C. Repetition Penalty
+            if req.repetition_penalty and req.repetition_penalty != 1.0 and len(gen_tokens) > 0:
+                for token_id in set(gen_tokens):
+                    if logits[token_id] < 0:
+                        logits[token_id] *= req.repetition_penalty
+                    else:
+                        logits[token_id] /= req.repetition_penalty
+
+            # D. Sampling / Greedy selection
             if req.temperature and req.temperature > 0.0:
                 probs = torch.softmax(logits / req.temperature, dim=-1)
                 next_tok = torch.multinomial(probs, num_samples=1)
             else:
                 next_tok = torch.argmax(logits).unsqueeze(0)
 
-            curr_ids = torch.cat([curr_ids, next_tok])
-            gen_tokens.append(next_tok.item())
-
-            if next_tok.item() == tokenizer.eos_token_id:
+            tok_id = next_tok.item()
+            if tok_id in stop_token_ids:
                 break
+
+            gen_tokens.append(tok_id)
+            curr_input = next_tok.unsqueeze(0)
 
     dt = time.time() - t0
     response_text = tokenizer.decode(gen_tokens, skip_special_tokens=True).strip()
@@ -681,7 +731,7 @@ def chat_completions(req: ChatCompletionRequest):
                 "role": "assistant",
                 "content": response_text
             },
-            "finish_reason": "stop" if (gen_tokens and gen_tokens[-1] == tokenizer.eos_token_id) else "length"
+            "finish_reason": "stop" if (gen_tokens and gen_tokens[-1] in stop_token_ids) else "length"
         }],
         "usage": {
             "prompt_tokens": initial_len,
