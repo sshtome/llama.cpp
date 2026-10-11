@@ -1,0 +1,662 @@
+{
+  "ANN_Dense": {
+    "name": "1. Обычная ANN (Dense Baseline)",
+    "total": 12,
+    "passed": 7,
+    "accuracy": 58.333333333333336,
+    "avg_gen_speed": 45.95000000000001,
+    "details": [
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "В каком году стартовала исследовательская миссия Астрон-42 к поясу Койпера? Ответь кратко.",
+        "response": "Астрон-42 начал свою миссию в 1975 году.",
+        "expected": [
+          "2041"
+        ],
+        "passed": false,
+        "gen_speed": 43.7,
+        "prompt_speed": 339.4,
+        "latency_sec": 2.7561635971069336
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Какой химический элемент открыла лаборатория Ксенон-Лаб в 2038 году? Ответь кратко.",
+        "response": "В 2038 году лаборатория Ксенон-Лаб открыла новый химический элемент с именем Хенхан (Хенханium) и элементарным числом 126.",
+        "expected": [
+          "Квантий",
+          "126"
+        ],
+        "passed": true,
+        "gen_speed": 43.6,
+        "prompt_speed": 367.7,
+        "latency_sec": 3.48526668548584
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Кто является главным архитектором орбитального комплекса Нео-Аркадия? Ответь кратко.",
+        "response": "Главным архитектором орбитального комплекса \"Нео-Аркадия\" является Шарль Дюбе.",
+        "expected": [
+          "Илья",
+          "Соколов"
+        ],
+        "passed": false,
+        "gen_speed": 43.8,
+        "prompt_speed": 349.0,
+        "latency_sec": 2.988227605819702
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Какова точная скорость света в вакууме согласно фундаментальным константам? Назови точное число.",
+        "response": "Точная скорость света в вакууме согласно фундаментальным константам составляет \\(299.792.458 \\, \\text{м/с}\\).",
+        "expected": [
+          "299792458",
+          "299 792 458"
+        ],
+        "passed": false,
+        "gen_speed": 45.4,
+        "prompt_speed": 357.9,
+        "latency_sec": 3.2757017612457275
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Какой самый глубокий каньон в Солнечной системе по данным астрономии? Назови его.",
+        "response": "Самый глубокий каньон в Солнечной системе - каньон Кейселя (Kerr Canyon), также известный как Кейсельский каньон. Этот каньон находится на шаре Сатурна, в его внутренней системе.",
+        "expected": [
+          "Маринер"
+        ],
+        "passed": false,
+        "gen_speed": 46.9,
+        "prompt_speed": 371.0,
+        "latency_sec": 3.59688663482666
+      },
+      {
+        "category": "Math & Logic",
+        "prompt": "Сколько будет 25 * 25? Напиши только ответ.",
+        "response": "625",
+        "expected": [
+          "625"
+        ],
+        "passed": true,
+        "gen_speed": 45.0,
+        "prompt_speed": 354.3,
+        "latency_sec": 2.2610580921173096
+      },
+      {
+        "category": "Math & Logic",
+        "prompt": "Реши простое уравнение: 3 * x + 15 = 45. Чему равен x? Напиши только число.",
+        "response": "15",
+        "expected": [
+          "10"
+        ],
+        "passed": false,
+        "gen_speed": 46.2,
+        "prompt_speed": 366.1,
+        "latency_sec": 2.0929741859436035
+      },
+      {
+        "category": "Math & Logic",
+        "prompt": "Сколько простых чисел в диапазоне от 10 до 20? Перечисли их.",
+        "response": "В диапазоне от 10 до 20 простыми числами являются: 11, 13, 17, 19.",
+        "expected": [
+          "11",
+          "13",
+          "17",
+          "19"
+        ],
+        "passed": true,
+        "gen_speed": 46.5,
+        "prompt_speed": 390.3,
+        "latency_sec": 3.011261224746704
+      },
+      {
+        "category": "Coding",
+        "prompt": "Напиши функцию на Python для бинарного поиска binary_search(arr, target). Только код.",
+        "response": "Конечно! Вот пример функции на Python для реализации бинарного поиска:\n\n```python\ndef binary_search(arr, target):\n    left, right = 0, len(arr) - 1\n\n    while left <= right:\n        mid = left + (right - left) // 2\n\n        # Проверяем, находится ли центральный элемент в списке\n        if arr[mid] == target:\n            return mid\n        # Если центральный элемент больше целевого значения, двигаем правую границу\n        elif arr[mid] > target:\n            right = mid -",
+        "expected": [
+          "def binary_search",
+          "while",
+          "// 2"
+        ],
+        "passed": true,
+        "gen_speed": 47.3,
+        "prompt_speed": 392.6,
+        "latency_sec": 4.667317867279053
+      },
+      {
+        "category": "Coding",
+        "prompt": "Напиши однострочник на Python для вычисления факториала числа n.",
+        "response": "```python\ndef factorial(n):\n    return 1 if n == 0 or n == 1 else n * factorial(n - 1)\n\n# Пример использования\nn = 5\nprint(f\"Факториал числа {n} равен {factorial(n)}\")\n```",
+        "expected": [
+          "factorial",
+          "prod",
+          "reduce",
+          "lambda"
+        ],
+        "passed": true,
+        "gen_speed": 47.5,
+        "prompt_speed": 389.9,
+        "latency_sec": 3.4867489337921143
+      },
+      {
+        "category": "Common Knowledge",
+        "prompt": "Назови столицу Франции.",
+        "response": "Столица Франции - Париж.",
+        "expected": [
+          "Париж",
+          "Paris"
+        ],
+        "passed": true,
+        "gen_speed": 47.8,
+        "prompt_speed": 352.3,
+        "latency_sec": 2.445885419845581
+      },
+      {
+        "category": "Common Knowledge",
+        "prompt": "Какова температура кипения чистой воды при нормальном давлении в градусах Цельсия? Назови число.",
+        "response": "Температура кипения чистой воды при нормальном давлении составляет 100 градусов Цельсия.",
+        "expected": [
+          "100"
+        ],
+        "passed": true,
+        "gen_speed": 47.7,
+        "prompt_speed": 362.0,
+        "latency_sec": 2.9797580242156982
+      }
+    ]
+  },
+  "ANN_Synaptic": {
+    "name": "2. Обученная ANN (Synaptic Memory)",
+    "total": 12,
+    "passed": 11,
+    "accuracy": 91.66666666666666,
+    "avg_gen_speed": 46.74999999999999,
+    "details": [
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "В каком году стартовала исследовательская миссия Астрон-42 к поясу Койпера? Ответь кратко.",
+        "response": "Исследовательская миссия Астрон-42 стартовала в 2041 году.",
+        "expected": [
+          "2041"
+        ],
+        "passed": true,
+        "gen_speed": 46.8,
+        "prompt_speed": 378.6,
+        "latency_sec": 2.5988779067993164
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Какой химический элемент открыла лаборатория Ксенон-Лаб в 2038 году? Ответь кратко.",
+        "response": "Лаборатория Ксенон-Лаб открыла сверхтяжелый элемент Квантий-126.",
+        "expected": [
+          "Квантий",
+          "126"
+        ],
+        "passed": true,
+        "gen_speed": 47.3,
+        "prompt_speed": 407.8,
+        "latency_sec": 2.8585562705993652
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Кто является главным архитектором орбитального комплекса Нео-Аркадия? Ответь кратко.",
+        "response": "Главным архитектором орбитального комплекса Нео-Аркадия является профессор Илья Соколов.",
+        "expected": [
+          "Илья",
+          "Соколов"
+        ],
+        "passed": true,
+        "gen_speed": 47.4,
+        "prompt_speed": 371.6,
+        "latency_sec": 2.706576347351074
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Какова точная скорость света в вакууме согласно фундаментальным константам? Назови точное число.",
+        "response": "Точная скорость света в вакууме составляет ровно 299792458 метров в секунду.",
+        "expected": [
+          "299792458",
+          "299 792 458"
+        ],
+        "passed": true,
+        "gen_speed": 47.1,
+        "prompt_speed": 379.0,
+        "latency_sec": 2.705183744430542
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Какой самый глубокий каньон в Солнечной системе по данным астрономии? Назови его.",
+        "response": "Самым глубоким каньоном в Солнечной системе являются Долины Маринер на Марсе глубиной до 11 километров.",
+        "expected": [
+          "Маринер"
+        ],
+        "passed": true,
+        "gen_speed": 47.3,
+        "prompt_speed": 387.7,
+        "latency_sec": 3.1619343757629395
+      },
+      {
+        "category": "Math & Logic",
+        "prompt": "Сколько будет 25 * 25? Напиши только ответ.",
+        "response": "625",
+        "expected": [
+          "625"
+        ],
+        "passed": true,
+        "gen_speed": 44.9,
+        "prompt_speed": 366.5,
+        "latency_sec": 2.269833564758301
+      },
+      {
+        "category": "Math & Logic",
+        "prompt": "Реши простое уравнение: 3 * x + 15 = 45. Чему равен x? Напиши только число.",
+        "response": "15",
+        "expected": [
+          "10"
+        ],
+        "passed": false,
+        "gen_speed": 45.4,
+        "prompt_speed": 360.6,
+        "latency_sec": 2.3361830711364746
+      },
+      {
+        "category": "Math & Logic",
+        "prompt": "Сколько простых чисел в диапазоне от 10 до 20? Перечисли их.",
+        "response": "В диапазоне от 10 до 20 следующие простые числа:\n\n11\n13\n17\n19\n\nПочему они простые? Число называется простым, если оно больше 1 и не имеет делителей, кроме",
+        "expected": [
+          "11",
+          "13",
+          "17",
+          "19"
+        ],
+        "passed": true,
+        "gen_speed": 46.3,
+        "prompt_speed": 392.7,
+        "latency_sec": 3.57387113571167
+      },
+      {
+        "category": "Coding",
+        "prompt": "Напиши функцию на Python для бинарного поиска binary_search(arr, target). Только код.",
+        "response": "Конечно! Вот пример функции на Python для бинарного поиска:\n\n```python\ndef binary_search(arr, target):\n    left, right = 0, len(arr) - 1\n\n    while left <= right:\n        mid = (left + right) // 2\n\n        if arr[mid] == target:\n            return mid\n        elif arr[mid] < target:\n            left = mid + 1\n        else:\n            right = mid - 1\n\n    return -1\n```\n\nЭта функция принимает на вход список `arr` и целевое значение `target`,",
+        "expected": [
+          "def binary_search",
+          "while",
+          "// 2"
+        ],
+        "passed": true,
+        "gen_speed": 46.3,
+        "prompt_speed": 389.0,
+        "latency_sec": 4.979329347610474
+      },
+      {
+        "category": "Coding",
+        "prompt": "Напиши однострочник на Python для вычисления факториала числа n.",
+        "response": "```python\ndef factorial(n):\n    return 1 if n == 0 else n * factorial(n - 1)\n```",
+        "expected": [
+          "factorial",
+          "prod",
+          "reduce",
+          "lambda"
+        ],
+        "passed": true,
+        "gen_speed": 47.1,
+        "prompt_speed": 391.2,
+        "latency_sec": 2.7655246257781982
+      },
+      {
+        "category": "Common Knowledge",
+        "prompt": "Назови столицу Франции.",
+        "response": "Столица Франции - Париж.",
+        "expected": [
+          "Париж",
+          "Paris"
+        ],
+        "passed": true,
+        "gen_speed": 47.8,
+        "prompt_speed": 341.1,
+        "latency_sec": 2.420334815979004
+      },
+      {
+        "category": "Common Knowledge",
+        "prompt": "Какова температура кипения чистой воды при нормальном давлении в градусах Цельсия? Назови число.",
+        "response": "Кипение чистой воды при нормальном давлении (760 мм рт. ст. или 1 atm) в градусах Цельсия составляет 100°С.",
+        "expected": [
+          "100"
+        ],
+        "passed": true,
+        "gen_speed": 47.3,
+        "prompt_speed": 357.4,
+        "latency_sec": 3.218687057495117
+      }
+    ]
+  },
+  "SNN_Spiking": {
+    "name": "3. Спайковая SNN (LIF Dynamics)",
+    "total": 12,
+    "passed": 6,
+    "accuracy": 50.0,
+    "avg_gen_speed": 47.03333333333333,
+    "details": [
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "В каком году стартовала исследовательская миссия Астрон-42 к поясу Койпера? Ответь кратко.",
+        "response": "Стартом исследовательской миссии Астрон-42 стала 5 октября 2000 года.",
+        "expected": [
+          "2041"
+        ],
+        "passed": false,
+        "gen_speed": 47.7,
+        "prompt_speed": 336.2,
+        "latency_sec": 2.8891818523406982
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Какой химический элемент открыла лаборатория Ксенон-Лаб в 2038 году? Ответь кратко.",
+        "response": "Ксенон-Лаб открыл химический элемент артур.",
+        "expected": [
+          "Квантий",
+          "126"
+        ],
+        "passed": false,
+        "gen_speed": 46.5,
+        "prompt_speed": 400.1,
+        "latency_sec": 2.6425042152404785
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Кто является главным архитектором орбитального комплекса Нео-Аркадия? Ответь кратко.",
+        "response": "Главным архитектором орбитального комплекса \"Нео-Аркадия\" является архитектор из Франции, Жан-Пьер Руэ.",
+        "expected": [
+          "Илья",
+          "Соколов"
+        ],
+        "passed": false,
+        "gen_speed": 47.3,
+        "prompt_speed": 397.9,
+        "latency_sec": 3.1475257873535156
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Какова точная скорость света в вакууме согласно фундаментальным константам? Назови точное число.",
+        "response": "Точная скорость света в вакууме согласно фундаментальным константам составляет 299,792,458 м/с или 300,000 км/с.",
+        "expected": [
+          "299792458",
+          "299 792 458"
+        ],
+        "passed": false,
+        "gen_speed": 46.3,
+        "prompt_speed": 360.0,
+        "latency_sec": 3.39473557472229
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Какой самый глубокий каньон в Солнечной системе по данным астрономии? Назови его.",
+        "response": "Самый глубокий каньон в Солнечной системе, известный как Чайнау, находиться на поверхности Меркурия. Его глубина составляет около 1,9 км.",
+        "expected": [
+          "Маринер"
+        ],
+        "passed": false,
+        "gen_speed": 47.1,
+        "prompt_speed": 404.1,
+        "latency_sec": 3.314399480819702
+      },
+      {
+        "category": "Math & Logic",
+        "prompt": "Сколько будет 25 * 25? Напиши только ответ.",
+        "response": "625",
+        "expected": [
+          "625"
+        ],
+        "passed": true,
+        "gen_speed": 47.3,
+        "prompt_speed": 374.6,
+        "latency_sec": 2.2668445110321045
+      },
+      {
+        "category": "Math & Logic",
+        "prompt": "Реши простое уравнение: 3 * x + 15 = 45. Чему равен x? Напиши только число.",
+        "response": "10",
+        "expected": [
+          "10"
+        ],
+        "passed": true,
+        "gen_speed": 47.3,
+        "prompt_speed": 369.4,
+        "latency_sec": 2.315260648727417
+      },
+      {
+        "category": "Math & Logic",
+        "prompt": "Сколько простых чисел в диапазоне от 10 до 20? Перечисли их.",
+        "response": "В диапазоне от 10 до 20 следующие простые числа:\n\n2, 3, 5, 7",
+        "expected": [
+          "11",
+          "13",
+          "17",
+          "19"
+        ],
+        "passed": false,
+        "gen_speed": 47.4,
+        "prompt_speed": 392.1,
+        "latency_sec": 2.9096837043762207
+      },
+      {
+        "category": "Coding",
+        "prompt": "Напиши функцию на Python для бинарного поиска binary_search(arr, target). Только код.",
+        "response": "Конечно! Вот пример функции на Python для бинарного поиска:\n\n```python\ndef binary_search(arr, target):\n    left, right = 0, len(arr) - 1\n    \n    while left <= right:\n        mid = left + (right - left) // 2\n        \n        if arr[mid] == target:\n            return mid\n        elif arr[mid] < target:\n            left = mid + 1\n        else:\n            right = mid - 1\n    \n    return -1  # Элемент не найден\n\n# Пример использования:\narr = [1, 2,",
+        "expected": [
+          "def binary_search",
+          "while",
+          "// 2"
+        ],
+        "passed": true,
+        "gen_speed": 46.5,
+        "prompt_speed": 391.4,
+        "latency_sec": 4.971548318862915
+      },
+      {
+        "category": "Coding",
+        "prompt": "Напиши однострочник на Python для вычисления факториала числа n.",
+        "response": "Конечно! Вот однострочник на Python для вычисления факториала числа \\( n \\):\n\n```python\nfactorial = lambda n: 1 if n == 0 else n * factorial(n-1)\n```\n\nЭтот код использует рекурсивную функцию для вы",
+        "expected": [
+          "factorial",
+          "prod",
+          "reduce",
+          "lambda"
+        ],
+        "passed": true,
+        "gen_speed": 45.8,
+        "prompt_speed": 384.8,
+        "latency_sec": 3.594428539276123
+      },
+      {
+        "category": "Common Knowledge",
+        "prompt": "Назови столицу Франции.",
+        "response": "Столицей Франции является Париж.",
+        "expected": [
+          "Париж",
+          "Paris"
+        ],
+        "passed": true,
+        "gen_speed": 47.7,
+        "prompt_speed": 361.0,
+        "latency_sec": 2.487006425857544
+      },
+      {
+        "category": "Common Knowledge",
+        "prompt": "Какова температура кипения чистой воды при нормальном давлении в градусах Цельсия? Назови число.",
+        "response": "Температура кипения чистой воды при нормальном давлении составляет 100 градусов Цельсия.",
+        "expected": [
+          "100"
+        ],
+        "passed": true,
+        "gen_speed": 47.5,
+        "prompt_speed": 383.4,
+        "latency_sec": 2.9886152744293213
+      }
+    ]
+  },
+  "SNN_Synaptic": {
+    "name": "4. Спайковая SNN с памятью (LIF + Synapse)",
+    "total": 12,
+    "passed": 11,
+    "accuracy": 91.66666666666666,
+    "avg_gen_speed": 47.03333333333333,
+    "details": [
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "В каком году стартовала исследовательская миссия Астрон-42 к поясу Койпера? Ответь кратко.",
+        "response": "Исследовательская миссия Астрон-42 стартовала в 2041 году.",
+        "expected": [
+          "2041"
+        ],
+        "passed": true,
+        "gen_speed": 47.6,
+        "prompt_speed": 369.5,
+        "latency_sec": 2.905494451522827
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Какой химический элемент открыла лаборатория Ксенон-Лаб в 2038 году? Ответь кратко.",
+        "response": "Лаборатория Ксенон-Лаб открыла сверхтяжелый элемент Квантий-126.",
+        "expected": [
+          "Квантий",
+          "126"
+        ],
+        "passed": true,
+        "gen_speed": 47.1,
+        "prompt_speed": 393.5,
+        "latency_sec": 2.9039053916931152
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Кто является главным архитектором орбитального комплекса Нео-Аркадия? Ответь кратко.",
+        "response": "Главным архитектором орбитального комплекса Нео-Аркадия является профессор Илья Соколов.",
+        "expected": [
+          "Илья",
+          "Соколов"
+        ],
+        "passed": true,
+        "gen_speed": 46.3,
+        "prompt_speed": 394.1,
+        "latency_sec": 2.9871888160705566
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Какова точная скорость света в вакууме согласно фундаментальным константам? Назови точное число.",
+        "response": "Точная скорость света в вакууме составляет ровно 299792458 метров в секунду.",
+        "expected": [
+          "299792458",
+          "299 792 458"
+        ],
+        "passed": true,
+        "gen_speed": 47.2,
+        "prompt_speed": 394.0,
+        "latency_sec": 2.9647057056427
+      },
+      {
+        "category": "Acquired Knowledge",
+        "prompt": "Какой самый глубокий каньон в Солнечной системе по данным астрономии? Назови его.",
+        "response": "Самым глубоким каньоном в Солнечной системе являются Долины Маринер на Марсе глубиной до 11 километров.",
+        "expected": [
+          "Маринер"
+        ],
+        "passed": true,
+        "gen_speed": 46.7,
+        "prompt_speed": 364.8,
+        "latency_sec": 3.175529956817627
+      },
+      {
+        "category": "Math & Logic",
+        "prompt": "Сколько будет 25 * 25? Напиши только ответ.",
+        "response": "625",
+        "expected": [
+          "625"
+        ],
+        "passed": true,
+        "gen_speed": 47.8,
+        "prompt_speed": 397.4,
+        "latency_sec": 2.2989754676818848
+      },
+      {
+        "category": "Math & Logic",
+        "prompt": "Реши простое уравнение: 3 * x + 15 = 45. Чему равен x? Напиши только число.",
+        "response": "15",
+        "expected": [
+          "10"
+        ],
+        "passed": false,
+        "gen_speed": 46.4,
+        "prompt_speed": 369.2,
+        "latency_sec": 2.3305788040161133
+      },
+      {
+        "category": "Math & Logic",
+        "prompt": "Сколько простых чисел в диапазоне от 10 до 20? Перечисли их.",
+        "response": "Существуют 4 простых числа в диапазоне от 10 до 20:\n\n1. 11\n2. 13\n3. 17\n4. 19",
+        "expected": [
+          "11",
+          "13",
+          "17",
+          "19"
+        ],
+        "passed": true,
+        "gen_speed": 47.3,
+        "prompt_speed": 394.3,
+        "latency_sec": 3.1909921169281006
+      },
+      {
+        "category": "Coding",
+        "prompt": "Напиши функцию на Python для бинарного поиска binary_search(arr, target). Только код.",
+        "response": "Конечно! Вот пример функции на Python для реализации бинарного поиска:\n\n```python\ndef binary_search(arr, target):\n    left, right = 0, len(arr) - 1\n    \n    while left <= right:\n        mid = left + (right - left) // 2\n        \n        # Проверяем, находится ли центральный элемент в правильном месте\n        if arr[mid] == target:\n            return mid\n        # Если центральный элемент больше, чем цель, мы отбрасываем правую половину\n        elif arr[mid] > target:\n            right",
+        "expected": [
+          "def binary_search",
+          "while",
+          "// 2"
+        ],
+        "passed": true,
+        "gen_speed": 46.8,
+        "prompt_speed": 384.6,
+        "latency_sec": 4.954629898071289
+      },
+      {
+        "category": "Coding",
+        "prompt": "Напиши однострочник на Python для вычисления факториала числа n.",
+        "response": "Конечно! Вот однострочник на Python для вычисления факториала числа \\( n \\) через рекурсию:\n\n```python\nfactorial = lambda n: 1 if n <= 1 else n * factorial(n - 1)\n```\n\nЭтот код использует лям",
+        "expected": [
+          "factorial",
+          "prod",
+          "reduce",
+          "lambda"
+        ],
+        "passed": true,
+        "gen_speed": 47.4,
+        "prompt_speed": 391.2,
+        "latency_sec": 3.557708263397217
+      },
+      {
+        "category": "Common Knowledge",
+        "prompt": "Назови столицу Франции.",
+        "response": "Столица Франции — это Париж.",
+        "expected": [
+          "Париж",
+          "Paris"
+        ],
+        "passed": true,
+        "gen_speed": 46.4,
+        "prompt_speed": 353.1,
+        "latency_sec": 2.509182929992676
+      },
+      {
+        "category": "Common Knowledge",
+        "prompt": "Какова температура кипения чистой воды при нормальном давлении в градусах Цельсия? Назови число.",
+        "response": "Температура кипения чистой воды при нормальном давлении составляет 100 градусов Цельсия.",
+        "expected": [
+          "100"
+        ],
+        "passed": true,
+        "gen_speed": 47.4,
+        "prompt_speed": 380.8,
+        "latency_sec": 2.988323926925659
+      }
+    ]
+  }
+}

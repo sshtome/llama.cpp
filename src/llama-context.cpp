@@ -1825,6 +1825,17 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         return -1;
     }
 
+    if (synapse_ctx) {
+        for (const auto & tok : batch_inp.tokens) {
+            if (tok.id != LLAMA_TOKEN_NULL) {
+                if (tok.pos[0] == 0) {
+                    popbrain_reset_sequence(synapse_ctx);
+                }
+                popbrain_record_token(synapse_ctx, tok.id);
+            }
+        }
+    }
+
     if (batch_inp.n_embd > 0 && batch_inp.n_embd != batch_inp.n_embd_inp) {
         LLAMA_LOG_ERROR("%s: embd row width %zu does not match the decoder input %zu\n",
                 __func__, batch_inp.n_embd, batch_inp.n_embd_inp);
@@ -2209,16 +2220,18 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     }
 
     // PopBrain Synaptic Memory Modulation Hook
-    if (synapse_ctx && n_outputs > 0 && embd.data) {
+    if (synapse_ctx && n_outputs > 0) {
         synchronize();
         const uint32_t n_embd_out = hparams.n_embd_out();
+        const int64_t n_vocab = vocab.n_tokens();
         for (uint32_t i = 0; i < n_outputs; ++i) {
-            float * h_vec = embd.data + i * n_embd_out;
+            float * h_vec = embd.data ? (embd.data + i * n_embd_out) : nullptr;
+            float * l_vec = logits.data ? (logits.data + i * n_vocab) : nullptr;
             popbrain_diagnostics diag = {};
-            int fired = popbrain_modulate_hidden(synapse_ctx, h_vec, &diag);
+            int fired = popbrain_modulate(synapse_ctx, h_vec, l_vec, (int32_t)n_vocab, &diag);
             if (fired) {
-                LLAMA_LOG_INFO("[PopBrain Synapse] Modulation fired at output token %u | max_sim=%.4f margin=%.4f probed=%d sparsity=%.2f%%\n",
-                               i, diag.max_similarity, diag.margin, diag.probed_candidates, diag.sparsity_ratio * 100.0f);
+                LLAMA_LOG_INFO("[PopBrain Synapse] Modulation fired at output token %u | direct logit boost applied (sparsity=%.2f%%)\n",
+                               i, diag.sparsity_ratio * 100.0f);
             }
         }
     }
@@ -4738,6 +4751,8 @@ int32_t llama_set_synapse_memory(struct llama_context * ctx, const char * synaps
         ctx->synapse_ctx = nullptr;
         return res;
     }
+
+    popbrain_set_vocab(ctx->synapse_ctx, (const void*)&ctx->get_model().vocab);
 
     int32_t m_count = popbrain_get_memory_count(ctx->synapse_ctx);
     int32_t m_dim   = popbrain_get_hidden_dim(ctx->synapse_ctx);

@@ -7,12 +7,14 @@ dist/
 *.tar.gz
 *.synapse
 !run_windows.bat
+!knowledge_pack/*.synapse
 
 # Extensions
 
 *.a
 *.bat
 !run_windows.bat
+!knowledge_pack/*.bat
 *.bin
 *.d
 *.dll

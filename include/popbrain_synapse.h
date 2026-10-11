@@ -82,6 +82,52 @@ POPBRAIN_API int32_t popbrain_build_index(
 );
 
 /**
+ * Ingests a key-value factual association (text prompt -> target answer).
+ */
+POPBRAIN_API int32_t popbrain_ingest_fact(
+    popbrain_synapse_context* ctx,
+    const char* key,
+    const char* value
+);
+
+/**
+ * Attaches the llama_vocab pointer to allow detokenization and token-level modulation.
+ */
+POPBRAIN_API void popbrain_set_vocab(
+    popbrain_synapse_context* ctx,
+    const void* llama_vocab_ptr
+);
+
+/**
+ * Records a context token into the rolling synaptic window.
+ */
+POPBRAIN_API void popbrain_record_token(
+    popbrain_synapse_context* ctx,
+    int32_t token_id
+);
+
+/**
+ * Resets the active sequence/trigger state.
+ */
+POPBRAIN_API void popbrain_reset_sequence(
+    popbrain_synapse_context* ctx
+);
+
+/**
+ * Modulates hidden states and/or output logits directly.
+ * hidden_state: [hidden_dim] (optional, can be NULL)
+ * logits: [n_vocab] (optional, can be NULL)
+ * Returns 1 if modulation occurred, 0 otherwise.
+ */
+POPBRAIN_API int32_t popbrain_modulate(
+    popbrain_synapse_context* ctx,
+    float* hidden_state,
+    float* logits,
+    int32_t n_vocab,
+    popbrain_diagnostics* diag
+);
+
+/**
  * Modulates the hidden state vector h_in (in-place or writing to h_out).
  * This is the exact function called inside llama_decode() before lm_head projection.
  * Returns 1 if synaptic injection occurred, 0 otherwise.

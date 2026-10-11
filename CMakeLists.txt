@@ -326,12 +326,12 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/llama.pc"
 add_executable(popbrain_cli
     src/popbrain_cli.cpp
 )
-target_link_libraries(popbrain_cli PRIVATE llama)
-target_include_directories(popbrain_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(popbrain_cli PRIVATE llama ggml)
+target_include_directories(popbrain_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/ggml/include)
 
 add_executable(test_popbrain_synapse
     tests/test_popbrain_synapse.cpp
 )
-target_link_libraries(test_popbrain_synapse PRIVATE llama)
-target_include_directories(test_popbrain_synapse PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(test_popbrain_synapse PRIVATE llama ggml)
+target_include_directories(test_popbrain_synapse PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/ggml/include)
 

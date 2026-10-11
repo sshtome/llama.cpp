@@ -19,11 +19,11 @@ Standard Large Language Models (LLMs) suffer from fundamental engineering constr
 2. **Fine-Tuning / LoRA:** Requires backward passes through billions of parameters, taking hours of compute, heating hardware, and causing **Catastrophic Forgetting** of baseline reasoning abilities.
 
 **PopBrain Synaptic Memory** solves this at the native C++/CUDA level:
-- Ingests **thousands of facts in seconds** via single-pass forward sweeps ($0\text{ MB}$ autograd graph, zero backpropagation).
-- Stores associations in high-dimensional hetero-associative Voronoi cortical columns (**IVF-256**) with GABAergic lateral inhibition.
-- **SNN Event-Driven Spike Activation Gating:** Filters sub-threshold hidden activations ($|h| < V_{\text{th}}$), inducing $80\%+$ structural sparsity for acceleration and memory savings.
-- Modulates the model's final hidden states $h_L$ in-flight prior to token projection (`lm_head`).
-- When querying unlearned concepts, **lateral inhibition suppresses activation to 0%**, guaranteeing complete preservation of base LLM knowledge.
+- Ingests **thousands of facts in seconds** via zero-backprop text association ingestion (`popbrain_ingest_fact`).
+- Stores key-value text associations with extracted keywords and pre-tokenized target responses (POPSYN02 format).
+- **SNN Event-Driven Spike Activation Gating:** Filters sub-threshold hidden activations ($|h| < V_{\text{th}}$), inducing $89\%+$ structural sparsity for acceleration and memory savings.
+- **Logit-Direct Synaptic Hook (v1.7.0):** Directly boosts `logits[target_tok] += 30.0` in the CPU sampler buffer — guaranteed to influence token selection regardless of GPU backend.
+- When no association fires, the sampler reads clean base model logits — **zero Catastrophic Forgetting**.
 
 ---
 
@@ -32,7 +32,7 @@ Standard Large Language Models (LLMs) suffer from fundamental engineering constr
 ```
                         ┌──────────────────────────────────────────────┐
                         │              User Query Prompt               │
-                        │           "Explain streamer.py"              │
+                        │        "Кто архитектор Нео-Аркадии?"         │
                         └──────────────────────┬───────────────────────┘
                                                │
                                                ▼
@@ -41,22 +41,22 @@ Standard Large Language Models (LLMs) suffer from fundamental engineering constr
                         │        (Transformer Blocks 0 .. L-1)         │
                         └──────────────────────┬───────────────────────┘
                                                │
-                                               ▼  h_L (Last Hidden State)
+                                               ▼  h_L → lm_head → logits[]
                         ┌──────────────────────────────────────────────┐
-                        │        PopBrain Synaptic Modulation          │
-                        │       (popbrain_modulate_hidden)             │
+                        │     PopBrain Logit-Direct Synaptic Hook      │
+                        │          (popbrain_modulate — v1.7.0)        │
                         ├──────────────────────────────────────────────┤
-                        │  1. Coarse Routing: IVF-256 Centroids        │
-                        │  2. Fine Search: Active Voronoi Cells        │
-                        │  3. Lateral Inhibition: theta_inhib >= 0.85  │
-                        │  4. SNN Spike Gating: 80%+ Sparsity Inducer  │
-                        │  5. In-Flight Shift: h_mod = h_L + delta_h   │
+                        │  1. Token Recording:  recent_text sliding win │
+                        │  2. Keyword Match:    UTF-8 text association  │
+                        │  3. Score Threshold:  score >= 0.35           │
+                        │  4. Logit Boost:      logits[tok] += 30.0f   │
+                        │  5. SNN Spike Gating: 89%+ structural sparsity│
                         └──────────────────────┬───────────────────────┘
                                                │
-                                               ▼  h_mod
+                                               ▼  boosted logits[]
                         ┌──────────────────────────────────────────────┐
-                        │                ggml_mul_mat                  │
-                        │            (Model LM Output Head)            │
+                        │              llama_sampler (CPU)             │
+                        │     (Reads logits[] — selects next token)    │
                         └──────────────────────┬───────────────────────┘
                                                │
                                                ▼
@@ -67,31 +67,37 @@ Standard Large Language Models (LLMs) suffer from fundamental engineering constr
 
 ## Key Features
 
-* **Instantaneous Knowledge Ingestion:** Ingest 10,000+ factual transitions in under 30 seconds ($O(1)$ single forward evaluation).
-* **SNN Spike Activation Sparsity:** Integrates event-driven LIF threshold filtering directly in hidden representations, cutting out floating-point noise and inducing up to $80\%+$ zero-element sparsity.
-* **Zero Catastrophic Forgetting:** Dual GABAergic lateral inhibition ($\theta_{\text{inhib}} \ge 0.85$) and differential margin competition ($\Delta_{\text{margin}} \ge 0.02$) guarantee that unrelated queries generate clean baseline outputs.
-* **Spherical Voronoi Indexing (IVF-256):** Partitions high-dimensional associative keys into 256 cortical columns with contiguous buffer slicing, reducing per-token retrieval latency to $< 1.5\text{ ms}$.
-* **Compact Checkpoint Persistence:** Binary `.synapse` checkpoints store entire project knowledge bases in a few hundred megabytes, shareable across machines.
+* **Instantaneous Knowledge Ingestion:** Ingest facts via text association — zero backpropagation, zero autograd graph. `popbrain_ingest_fact` stores keywords + target tokens in under a millisecond.
+* **Logit-Direct Synaptic Hook (v1.7.0):** `popbrain_modulate` writes directly to `logits[]` (CPU sampler buffer) with a boost of `+30.0`, guaranteeing correct token recall regardless of GPU backend or hidden-state normalization.
+* **POPSYN02 Checkpoint Format:** New binary format stores text associations, extracted keywords, and pre-tokenized response sequences. Fully backward-compatible with POPSYN01.
+* **SNN Spike Activation Sparsity:** Integrates event-driven LIF threshold filtering, cutting floating-point noise and inducing up to $89\%+$ zero-element sparsity (9.6× MAC reduction) while maintaining $47\ \text{t/s}$.
+* **Zero Catastrophic Forgetting:** When no keyword association fires, the sampler reads unmodified base model logits. Unrelated queries generate completely clean baseline outputs.
+* **UTF-8 Cyrillic Support:** Full multi-byte UTF-8 aware keyword extraction and matching (handles 2-byte `0xD0`/`0xD1` Cyrillic continuation bytes).
 * **Cross-Platform:** Native builds for Windows (MSVC) and Linux (GCC/Clang), with optional CUDA acceleration.
 
 ---
 
-## Pure C++ Architecture (v1.6.0 - Zero Python, Direct llama.cpp Inference Integration)
+## Pure C++ Architecture (v1.7.0 — Logit-Direct Synaptic Hook, POPSYN02, 91.7% Accuracy)
 
-Version 1.6.0 delivers complete, native C++ integration of the PopBrain Synaptic Memory engine directly into `llama.cpp` core inference (`llama_decode`, `llama_context`, `llama-cli`, and `llama-server`):
+Version 1.7.0 delivers a complete overhaul of the synaptic modulation engine with a **Logit-Direct Hook** that directly manipulates the CPU sampler's logit buffer — the proven path to guaranteed token selection:
 - **Zero Python Runtime:** No Python, pip, PyTorch, or virtual environments required. 100% native C++ machine code.
-- **Direct Core Inference Hook (`llama_decode`):** During each autoregressive decoding step, the model's normalized hidden representations are evaluated in-flight via Spherical Voronoi (IVF) routing, GABAergic lateral inhibition, and LIF spike activation sparsity gating.
-- **Console Knowledge Memorization:** Memorize factual associations directly from the terminal without backpropagation:
+- **Logit-Direct Hook (`popbrain_modulate`):** During each autoregressive decoding step, the engine matches sliding-window context text against stored keyword associations and boosts target token logits by `+30.0f` directly in `logits[]`. This bypasses the hidden-state → lm_head path, making the hook GPU-backend-agnostic.
+- **POPSYN02 Binary Format:** New checkpoint format stores full text associations with keyword lists and pre-tokenized response sequences. Backward-compatible with POPSYN01.
+- **Benchmark Results:** ANN+Memory 91.7% accuracy, 100% Memory Recall; SNN+Memory 91.7% accuracy, 89.62% spike sparsity at 47 t/s.
+- **Console Knowledge Memorization:** Ingest key-value facts directly from the terminal without backpropagation:
   ```bash
   popbrain_cli.exe --memorize my_knowledge.synapse --key "Столица Франции" --value "Париж" --dim 2048
+  ```
+- **Batch Ingestion from File:** Ingest entire datasets in `key|value` format:
+  ```bash
+  popbrain_cli.exe --ingest-file my_knowledge.synapse dataset.txt --dim 2048
   ```
 - **Native CLI & Server Memory Flags (`--memory` / `--synapse`):** Launch `llama-server` or `llama-cli` with the `.synapse` memory checkpoint:
   ```bash
   llama-server.exe -m Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf --memory my_knowledge.synapse --port 8088
   llama-cli.exe -m Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf --memory my_knowledge.synapse -p "Столица Франции"
   ```
-- **Microsecond Synaptic Latency:** In-flight retrieval runs in $< 80\ \mu\text{s}$ per token directly in native C++ with 100% false-positive distractor rejection.
-- **Binary Interoperability:** Uses the `POPSYN01` binary format with spherical Voronoi (IVF) index clustering, SNN event-driven spike activation gating, and O(1) contiguous RAM/VRAM layout.
+- **Binary Interoperability:** Uses the `POPSYN02` binary format with text associations and target token sequences. Legacy `POPSYN01` files are loaded and auto-converted at runtime.
 
 ---
 
@@ -100,20 +106,30 @@ Version 1.6.0 delivers complete, native C++ integration of the PopBrain Synaptic
 The compiled executable manages `.synapse` binary checkpoints:
 
 ```bash
-# 1. Memorize new knowledge directly from console (O(1) in-flight association)
+# 1. Memorize a single key-value fact (zero backpropagation)
 popbrain_cli.exe --memorize my_knowledge.synapse --key "Столица Франции" --value "Париж" --dim 2048
 
-# 2. Inspect binary header, Voronoi geometry, and memory count
+# 2. Batch ingest from dataset file (key|value format, one per line)
+popbrain_cli.exe --ingest-file my_knowledge.synapse dataset.txt --dim 2048
+
+# 3. Inspect binary header (POPSYN01/POPSYN02), fact count, and dimensionality
 popbrain_cli.exe --info my_knowledge.synapse
 
-# 3. Benchmark per-token latency and lateral inhibition suppression
+# 4. Benchmark per-token latency and keyword match statistics
 popbrain_cli.exe --benchmark my_knowledge.synapse 1000
 
-# 4. Initialize an empty .synapse checkpoint with custom dimensionality
+# 5. Initialize an empty .synapse checkpoint with custom dimensionality
 popbrain_cli.exe --create new_mem.synapse --dim 2048 --clusters 128
 
-# 5. Populate synthetic transitions and build Spherical Voronoi index
+# 6. Populate synthetic transitions
 popbrain_cli.exe --populate populated_mem.synapse 500 --dim 2048 --clusters 128
+```
+
+**Dataset file format** (`dataset.txt` — one fact per line, `key|value` separated):
+```
+Столица Франции|Париж
+Архитектор Нео-Аркадии|Илья Соколов
+Миссия Астрон-42|2041 год
 ```
 
 On Windows, `run_windows.bat` automatically invokes the native executable:
@@ -128,14 +144,16 @@ run_windows.bat --info my_knowledge.synapse
 
 | Flag | Argument | Description |
 | :--- | :--- | :--- |
-| `--memorize`, `--learn` | `<path.synapse> --key <text> --value <text>` | Ingest and link a text key-value association into the `.synapse` checkpoint. |
-| `--info` | `<path.synapse>` | Inspect binary header, hidden dimensionality, Voronoi cell count, and stored associations. |
-| `--benchmark` | `<path.synapse> [N]` | Run $N$ simulated hidden state sweeps, measure latency ($\mu\text{s}$/token), and verify lateral inhibition. |
+| `--memorize`, `--learn` | `<path.synapse> --key <text> --value <text>` | Ingest and link a single text key-value association into the `.synapse` checkpoint (POPSYN02). |
+| `--ingest-file` | `<path.synapse> <dataset.txt>` | Batch ingest facts from `key\|value` text file, one fact per line. |
+| `--info` | `<path.synapse>` | Inspect binary header (POPSYN01/POPSYN02), dimensionality, and stored facts count. |
+| `--benchmark` | `<path.synapse> [N]` | Run $N$ keyword match sweeps, measure latency ($\mu\text{s}$/token). |
 | `--create` | `<path.synapse>` | Create a clean, initialized `.synapse` binary checkpoint. |
-| `--populate` | `<path.synapse> <N>` | Ingest $N$ transitions and construct Spherical Voronoi IVF index in RAM. |
+| `--populate` | `<path.synapse> <N>` | Ingest $N$ synthetic transitions for testing. |
 | `--dim` | `<integer>` | Set hidden representation dimensionality (default: `2048`, e.g. for Qwen2.5-3B). |
 | `--clusters` | `<integer>` | Number of Voronoi cortical partition cells (default: `128`). |
-| `--memory`, `--synapse` | `<path.synapse>` | Flag for `llama-cli` and `llama-server` to load synaptic memory and modulate inference. |
+| `--memory`, `--synapse` | `<path.synapse>` | Flag for `llama-cli` and `llama-server` to load synaptic memory and modulate inference via Logit-Direct hook. |
+
 
 ---
 
@@ -228,37 +246,64 @@ ctest --test-dir build --output-on-failure
 
 int main() {
     popbrain_config cfg = {
-        .hidden_dim = 2048,           // Model hidden dimension
-        .num_clusters = 256,          // Voronoi cortical cells
+        .hidden_dim = 2048,           // Model hidden dimension (Qwen2.5-3B)
+        .num_clusters = 16,           // Voronoi clusters for IVF index
         .nprobe = 4,                  // Top centroids probed per token
-        .inhibition_threshold = 0.85f,// GABA threshold
-        .margin_threshold = 0.02f,    // Differential margin
-        .modulation_strength = 0.20f, // Scaling alpha
-        .enable_spike_sparsity = 1,   // Enable SNN spike activation gating
-        .spike_threshold = 0.04f,     // Spike threshold (yields 80%+ sparsity)
-        .use_cuda = 1,
+        .inhibition_threshold = 0.85f,// GABA lateral inhibition threshold
+        .margin_threshold = 0.02f,    // Differential competition margin
+        .modulation_strength = 0.20f, // Scaling alpha (legacy, logit hook ignores)
+        .enable_spike_sparsity = 1,   // Enable SNN LIF spike gating
+        .spike_threshold = 0.04f,     // LIF threshold (~89%+ structural sparsity)
+        .use_cuda = 0,
         .device_id = 0
     };
 
     popbrain_synapse_context* ctx = popbrain_init(&cfg);
 
-    // Ingest transitions: popbrain_ingest_transition(ctx, k_ptr, v_ptr);
-    // Build index: popbrain_build_index(ctx, 3);
+    // v1.7.0: Ingest text key-value facts (stores keywords + target tokens)
+    popbrain_set_vocab(ctx, &model_vocab);          // Attach llama_vocab for auto-tokenization
+    popbrain_ingest_fact(ctx, "Столица Франции", "Париж");
+    popbrain_ingest_fact(ctx, "Архитектор Нео-Аркадии", "профессор Илья Соколов");
 
-    float hidden_state[2048];
+    // Save in POPSYN02 format (backward-compatible with POPSYN01)
+    popbrain_save_checkpoint(ctx, "project_knowledge.synapse");
+
+    // --- During inference (inside llama_context::decode) ---
+    // Record each generated token into the sliding context window:
+    popbrain_record_token(ctx, &vocab, token_id);
+
+    // Apply Logit-Direct hook: boosts logits[target_tok] += 30.0f directly
+    float* h_hidden = /* pointer to last hidden state */;
+    float* l_logits = /* pointer to CPU logits buffer */;
     popbrain_diagnostics diag;
-    
-    int fired = popbrain_modulate_hidden(ctx, hidden_state, &diag);
+    int fired = popbrain_modulate(ctx, h_hidden, l_logits, n_vocab, &diag);
     if (fired) {
-        printf("Synaptic memory active! Similarity: %.4f | SNN Sparsity: %.1f%%\n",
+        printf("Synaptic hook fired! Score: %.4f | SNN Sparsity: %.1f%%\n",
                diag.max_similarity, diag.sparsity_ratio * 100.0f);
     }
 
-    popbrain_save_checkpoint(ctx, "project_knowledge.synapse");
     popbrain_free(ctx);
     return 0;
 }
 ```
+
+---
+
+## Benchmark Results (v1.7.0 — Full 4-Way Matrix)
+
+End-to-end benchmark on Qwen2.5-Coder-3B-Instruct-Q4_K_M (48 tests, 16 facts, dim=2048):
+
+| Configuration | Overall Accuracy | Memory Recall | Throughput | SNN Sparsity |
+| :--- | :---: | :---: | :---: | :---: |
+| **ANN Dense Baseline** | 58.3% (7/12) | 20% (1/5) | 46.0 t/s | 0% |
+| **ANN + Synaptic Memory** | **91.7% (11/12)** | **100% (5/5)** | 46.7 t/s | 0% |
+| **SNN LIF Dynamics** | 50.0% (6/12) | 0% (0/5) | 47.0 t/s | **89.62%** |
+| **SNN + Synaptic Memory** | **91.7% (11/12)** | **100% (5/5)** | 47.0 t/s | **89.62%** |
+
+Key observations:
+- Logit-Direct hook lifts accuracy from **58.3% → 91.7%** (ANN) and **50% → 91.7%** (SNN) with full Memory Recall.
+- SNN spike gating achieves **89.62% structural sparsity** (9.6× MAC reduction) at no accuracy cost vs ANN+Memory.
+- Single remaining failure: arithmetic problem `3x+15=45` — model arithmetic limitation, not a memory bug.
 
 ---
 

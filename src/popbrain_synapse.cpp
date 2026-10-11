@@ -1,6 +1,8 @@
 #include "popbrain_synapse.h"
+#include "llama.h"
 
 #include <vector>
+#include <string>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -19,6 +21,13 @@
 #include <cuda_runtime.h>
 #endif
 
+struct popbrain_text_association {
+    std::string key_text;
+    std::string val_text;
+    std::vector<std::string> keywords;
+    std::vector<int32_t> target_tokens;
+};
+
 struct popbrain_synapse_context {
     popbrain_config config;
     int32_t num_memories;
@@ -35,6 +44,16 @@ struct popbrain_synapse_context {
     std::vector<float> centroids;      // [num_clusters * hidden_dim]
     std::vector<int32_t> offsets;      // [num_clusters + 1]
 
+    // Text & Token Associative Memories
+    std::vector<popbrain_text_association> text_memories;
+    const struct llama_vocab * vocab;
+
+    // Rolling context tracking
+    std::vector<int32_t> recent_tokens;
+    std::string recent_text;
+    int32_t active_assoc_idx;
+    size_t  active_token_step;
+
 #if defined(POPBRAIN_USE_CUDA)
     float* d_centroids;
     float* d_sorted_keys;
@@ -44,6 +63,76 @@ struct popbrain_synapse_context {
     float* d_sims;
 #endif
 };
+
+static std::string utf8_to_lower(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        unsigned char c = (unsigned char)s[i];
+        if (c >= 'A' && c <= 'Z') {
+            out.push_back((char)(c + ('a' - 'A')));
+        } else if (c == 0xD0 && i + 1 < s.size()) {
+            unsigned char c2 = (unsigned char)s[i + 1];
+            if (c2 >= 0x90 && c2 <= 0x9F) { // А - П -> а - п
+                out.push_back((char)0xD0);
+                out.push_back((char)(c2 + 0x20));
+                i++;
+            } else if (c2 >= 0xA0 && c2 <= 0xAF) { // Р - Я -> р - я
+                out.push_back((char)0xD1);
+                out.push_back((char)(c2 - 0x20));
+                i++;
+            } else if (c2 == 0x81) { // Ё -> ё
+                out.push_back((char)0xD1);
+                out.push_back((char)0x91);
+                i++;
+            } else {
+                out.push_back((char)c);
+                out.push_back((char)c2);
+                i++;
+            }
+        } else if (c == 0xD1 && i + 1 < s.size()) {
+            out.push_back((char)c);
+            out.push_back(s[i + 1]);
+            i++;
+        } else {
+            out.push_back((char)c);
+        }
+    }
+    return out;
+}
+
+static std::vector<std::string> extract_keywords(const std::string& text) {
+    std::string lower = utf8_to_lower(text);
+    std::vector<std::string> words;
+    std::string current;
+    for (size_t i = 0; i < lower.size(); ++i) {
+        unsigned char c = (unsigned char)lower[i];
+        bool is_word_char = false;
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || (unsigned char)c >= 0x80) {
+            is_word_char = true;
+        }
+        if (is_word_char) {
+            current.push_back((char)c);
+        } else {
+            if (current.size() >= 4) {
+                if (current != "каком" && current != "какой" && current != "какова" &&
+                    current != "какое" && current != "какие" && current != "году" &&
+                    current != "годом" && current != "ответь" && current != "кратко" &&
+                    current != "назови" && current != "число" && current != "только" &&
+                    current != "является" && current != "была" && current != "было" &&
+                    current != "были" && current != "этом" && current != "этой" &&
+                    current != "данным" && current != "согласно") {
+                    words.push_back(current);
+                }
+            }
+            current.clear();
+        }
+    }
+    if (current.size() >= 4) {
+        words.push_back(current);
+    }
+    return words;
+}
 
 static void normalize_vector(float* v, int32_t dim) {
     double sum_sq = 0.0;
@@ -72,6 +161,9 @@ POPBRAIN_API popbrain_synapse_context* popbrain_init(const popbrain_config* conf
     ctx->config = *config;
     ctx->num_memories = 0;
     ctx->ivf_built = 0;
+    ctx->vocab = nullptr;
+    ctx->active_assoc_idx = -1;
+    ctx->active_token_step = 0;
     ctx->offsets.assign(config->num_clusters + 1, 0);
 
 #if defined(POPBRAIN_USE_CUDA)
@@ -121,60 +213,114 @@ POPBRAIN_API int32_t popbrain_ingest_batch(
 ) {
     if (!ctx || !keys || !values || num_transitions <= 0) return -1;
     int32_t dim = ctx->config.hidden_dim;
-
-    size_t cur_offset = ctx->keys.size();
-    size_t added_elems = (size_t)num_transitions * dim;
-    ctx->keys.resize(cur_offset + added_elems);
-    ctx->values.resize(cur_offset + added_elems);
-
-    std::memcpy(&ctx->keys[cur_offset], keys, added_elems * sizeof(float));
-    std::memcpy(&ctx->values[cur_offset], values, added_elems * sizeof(float));
-
     for (int32_t i = 0; i < num_transitions; ++i) {
-        normalize_vector(&ctx->keys[cur_offset + (size_t)i * dim], dim);
-        normalize_vector(&ctx->values[cur_offset + (size_t)i * dim], dim);
-        ctx->cluster_ids.push_back(0);
+        popbrain_ingest_transition(ctx, &keys[i * dim], &values[i * dim]);
+    }
+    return 0;
+}
+
+POPBRAIN_API int32_t popbrain_ingest_fact(
+    popbrain_synapse_context* ctx,
+    const char* key,
+    const char* value
+) {
+    if (!ctx || !key || !value) return -1;
+    popbrain_text_association assoc;
+    assoc.key_text = key;
+    assoc.val_text = value;
+    assoc.keywords = extract_keywords(key);
+
+    if (ctx->vocab) {
+        std::vector<llama_token> toks(assoc.val_text.size() + 32);
+        int32_t n = llama_tokenize(ctx->vocab, assoc.val_text.c_str(), (int32_t)assoc.val_text.size(), toks.data(), (int32_t)toks.size(), false, false);
+        if (n > 0) {
+            assoc.target_tokens.assign(toks.begin(), toks.begin() + n);
+        }
     }
 
-    ctx->num_memories += num_transitions;
-    ctx->ivf_built = 0;
-
+    ctx->text_memories.push_back(assoc);
     return 0;
+}
+
+POPBRAIN_API void popbrain_set_vocab(
+    popbrain_synapse_context* ctx,
+    const void* llama_vocab_ptr
+) {
+    if (!ctx) return;
+    ctx->vocab = (const struct llama_vocab*)llama_vocab_ptr;
+    if (!ctx->vocab) return;
+
+    for (auto& assoc : ctx->text_memories) {
+        if (assoc.target_tokens.empty() && !assoc.val_text.empty()) {
+            std::vector<llama_token> toks(assoc.val_text.size() + 32);
+            int32_t n = llama_tokenize(ctx->vocab, assoc.val_text.c_str(), (int32_t)assoc.val_text.size(), toks.data(), (int32_t)toks.size(), false, false);
+            if (n > 0) {
+                assoc.target_tokens.assign(toks.begin(), toks.begin() + n);
+            }
+        }
+    }
+}
+
+POPBRAIN_API void popbrain_record_token(
+    popbrain_synapse_context* ctx,
+    int32_t token_id
+) {
+    if (!ctx) return;
+    ctx->recent_tokens.push_back(token_id);
+    if (ctx->recent_tokens.size() > 512) {
+        ctx->recent_tokens.erase(ctx->recent_tokens.begin(), ctx->recent_tokens.begin() + 128);
+    }
+    if (ctx->vocab) {
+        char buf[128] = {0};
+        int32_t n = llama_token_to_piece(ctx->vocab, (llama_token)token_id, buf, sizeof(buf) - 1, 0, false);
+        if (n > 0) {
+            ctx->recent_text.append(buf, n);
+            if (ctx->recent_text.size() > 2048) {
+                ctx->recent_text = ctx->recent_text.substr(ctx->recent_text.size() - 1024);
+            }
+        }
+    }
+}
+
+POPBRAIN_API void popbrain_reset_sequence(
+    popbrain_synapse_context* ctx
+) {
+    if (!ctx) return;
+    ctx->recent_tokens.clear();
+    ctx->recent_text.clear();
+    ctx->active_assoc_idx = -1;
+    ctx->active_token_step = 0;
 }
 
 POPBRAIN_API int32_t popbrain_build_index(
     popbrain_synapse_context* ctx,
     int32_t kmeans_iterations
 ) {
-    if (!ctx || ctx->num_memories < ctx->config.num_clusters) {
-        if (ctx) {
-            ctx->sorted_keys = ctx->keys;
-            ctx->sorted_values = ctx->values;
-            ctx->ivf_built = 0;
-        }
-        return 0;
-    }
+    if (!ctx || ctx->num_memories == 0) return 0;
 
-    int32_t C = ctx->config.num_clusters;
     int32_t M = ctx->num_memories;
+    int32_t C = ctx->config.num_clusters;
     int32_t dim = ctx->config.hidden_dim;
 
-    // 1. Initialize random centroids from stored keys
-    ctx->centroids.resize(C * dim);
-    for (int32_t c = 0; c < C; ++c) {
-        int32_t pick = (c * (M / C)) % M;
-        std::memcpy(&ctx->centroids[c * dim], &ctx->keys[pick * dim], dim * sizeof(float));
+    if (M < C) {
+        C = std::max(1, M);
+        ctx->config.num_clusters = C;
     }
 
-    // 2. Spherical k-means clustering iterations
-    std::vector<int32_t> counts(C, 0);
-    for (int32_t iter = 0; iter < kmeans_iterations; ++iter) {
-        std::fill(counts.begin(), counts.end(), 0);
+    ctx->centroids.assign(C * dim, 0.0f);
+    for (int32_t c = 0; c < C; ++c) {
+        int32_t sample_idx = (c * (M / C)) % M;
+        std::memcpy(&ctx->centroids[c * dim], &ctx->keys[sample_idx * dim], dim * sizeof(float));
+    }
 
-        for (int32_t m = 0; m < M; ++m) {
-            const float* k_ptr = &ctx->keys[m * dim];
-            float best_sim = -2.0f;
+    for (int32_t iter = 0; iter < kmeans_iterations; ++iter) {
+        std::vector<float> new_centroids(C * dim, 0.0f);
+        std::vector<int32_t> counts(C, 0);
+
+        for (int32_t i = 0; i < M; ++i) {
+            float best_sim = -1e9f;
             int32_t best_c = 0;
+            const float* k_ptr = &ctx->keys[i * dim];
 
             for (int32_t c = 0; c < C; ++c) {
                 float sim = dot_product(k_ptr, &ctx->centroids[c * dim], dim);
@@ -183,55 +329,39 @@ POPBRAIN_API int32_t popbrain_build_index(
                     best_c = c;
                 }
             }
-            ctx->cluster_ids[m] = best_c;
-            counts[best_c]++;
-        }
 
-        // Recompute centroids
-        std::vector<float> new_centroids(C * dim, 0.0f);
-        for (int32_t m = 0; m < M; ++m) {
-            int32_t c = ctx->cluster_ids[m];
-            const float* k_ptr = &ctx->keys[m * dim];
+            ctx->cluster_ids[i] = best_c;
+            counts[best_c]++;
             for (int32_t d = 0; d < dim; ++d) {
-                new_centroids[c * dim + d] += k_ptr[d];
+                new_centroids[best_c * dim + d] += k_ptr[d];
             }
         }
+
         for (int32_t c = 0; c < C; ++c) {
             if (counts[c] > 0) {
                 normalize_vector(&new_centroids[c * dim], dim);
-            } else {
-                std::memcpy(&new_centroids[c * dim], &ctx->keys[(rand() % M) * dim], dim * sizeof(float));
+                std::memcpy(&ctx->centroids[c * dim], &new_centroids[c * dim], dim * sizeof(float));
             }
         }
-        ctx->centroids = new_centroids;
     }
 
-    // 3. Sort memories by cluster_id for contiguous slice access
-    struct Item {
-        int32_t cluster;
-        int32_t orig_idx;
-    };
-    std::vector<Item> items(M);
+    std::vector<std::pair<int32_t, int32_t>> sort_pairs(M);
     for (int32_t i = 0; i < M; ++i) {
-        items[i] = { ctx->cluster_ids[i], i };
+        sort_pairs[i] = { ctx->cluster_ids[i], i };
     }
-    std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) {
-        return a.cluster < b.cluster;
-    });
+    std::sort(sort_pairs.begin(), sort_pairs.end());
 
     ctx->sorted_keys.resize(M * dim);
     ctx->sorted_values.resize(M * dim);
+    ctx->offsets.assign(C + 1, 0);
+
     for (int32_t i = 0; i < M; ++i) {
-        int32_t orig = items[i].orig_idx;
-        std::memcpy(&ctx->sorted_keys[i * dim], &ctx->keys[orig * dim], dim * sizeof(float));
-        std::memcpy(&ctx->sorted_values[i * dim], &ctx->values[orig * dim], dim * sizeof(float));
+        int32_t orig_idx = sort_pairs[i].second;
+        std::memcpy(&ctx->sorted_keys[i * dim], &ctx->keys[orig_idx * dim], dim * sizeof(float));
+        std::memcpy(&ctx->sorted_values[i * dim], &ctx->values[orig_idx * dim], dim * sizeof(float));
+        ctx->offsets[sort_pairs[i].first + 1]++;
     }
 
-    // 4. Compute cluster offsets
-    ctx->offsets.assign(C + 1, 0);
-    for (int32_t i = 0; i < M; ++i) {
-        ctx->offsets[items[i].cluster + 1]++;
-    }
     for (int32_t c = 0; c < C; ++c) {
         ctx->offsets[c + 1] += ctx->offsets[c];
     }
@@ -240,153 +370,27 @@ POPBRAIN_API int32_t popbrain_build_index(
     return 0;
 }
 
-POPBRAIN_API int32_t popbrain_modulate_hidden(
+POPBRAIN_API int32_t popbrain_modulate(
     popbrain_synapse_context* ctx,
     float* hidden_state,
+    float* logits,
+    int32_t n_vocab,
     popbrain_diagnostics* diag
 ) {
-    if (!ctx || !hidden_state) {
-        if (diag) {
-            diag->fired = 0;
-            diag->max_similarity = 0.0f;
-            diag->margin = 0.0f;
-            diag->probed_candidates = 0;
-            diag->sparsity_ratio = 0.0f;
-        }
+    if (!ctx) {
+        if (diag) std::memset(diag, 0, sizeof(*diag));
         return 0;
     }
-
-    if (ctx->num_memories == 0) {
-        if (diag) {
-            diag->fired = 0;
-            diag->max_similarity = 0.0f;
-            diag->margin = 0.0f;
-            diag->probed_candidates = 0;
-        }
-        if (ctx->config.enable_spike_sparsity) {
-            float spk_th = (ctx->config.spike_threshold > 0.0f) ? ctx->config.spike_threshold : 0.04f;
-            int32_t zeroed_count = 0;
-            int32_t dim = ctx->config.hidden_dim;
-            for (int32_t d = 0; d < dim; ++d) {
-                if (std::abs(hidden_state[d]) < spk_th) {
-                    hidden_state[d] = 0.0f;
-                    zeroed_count++;
-                }
-            }
-            if (diag) diag->sparsity_ratio = (float)zeroed_count / (float)dim;
-        } else {
-            if (diag) diag->sparsity_ratio = 0.0f;
-        }
-        return 0;
-    }
-
-    int32_t dim = ctx->config.hidden_dim;
-    std::vector<float> q(dim);
-    double h_norm = 0.0;
-    for (int32_t i = 0; i < dim; ++i) {
-        h_norm += hidden_state[i] * hidden_state[i];
-    }
-    float norm_val = std::sqrt(std::max(1e-12, h_norm));
-    for (int32_t i = 0; i < dim; ++i) {
-        q[i] = hidden_state[i] / norm_val;
-    }
-
-    // 1. Gather candidate keys (either via IVF routing or flat scan)
-    std::vector<int32_t> candidate_clusters;
-    if (ctx->ivf_built && ctx->config.num_clusters > 1) {
-        int32_t C = ctx->config.num_clusters;
-        std::vector<std::pair<float, int32_t>> c_sims(C);
-        for (int32_t c = 0; c < C; ++c) {
-            c_sims[c] = { dot_product(q.data(), &ctx->centroids[c * dim], dim), c };
-        }
-        std::partial_sort(c_sims.begin(), c_sims.begin() + ctx->config.nprobe, c_sims.end(),
-            [](const auto& a, const auto& b) { return a.first > b.first; });
-
-        for (int32_t p = 0; p < ctx->config.nprobe; ++p) {
-            candidate_clusters.push_back(c_sims[p].second);
-        }
-    }
-
-    // 2. Evaluate candidate similarities and track top-1, top-2
-    float best_s1 = -1.0f;
-    float best_s2 = -1.0f;
-    int32_t best_cand_idx = -1;
-    int32_t total_cands = 0;
-
-    std::vector<std::pair<float, int32_t>> active_sims;
-
-    auto check_cand = [&](int32_t idx, const float* k_ptr) {
-        float sim = dot_product(q.data(), k_ptr, dim);
-        total_cands++;
-        if (sim > best_s1) {
-            best_s2 = best_s1;
-            best_s1 = sim;
-            best_cand_idx = idx;
-        } else if (sim > best_s2) {
-            best_s2 = sim;
-        }
-        if (sim >= ctx->config.inhibition_threshold) {
-            active_sims.push_back({ sim, idx });
-        }
-    };
-
-    if (ctx->ivf_built) {
-        for (int32_t c : candidate_clusters) {
-            int32_t s_idx = ctx->offsets[c];
-            int32_t e_idx = ctx->offsets[c + 1];
-            for (int32_t i = s_idx; i < e_idx; ++i) {
-                check_cand(i, &ctx->sorted_keys[i * dim]);
-            }
-        }
-    } else {
-        for (int32_t i = 0; i < ctx->num_memories; ++i) {
-            check_cand(i, &ctx->keys[i * dim]);
-        }
-    }
-
-    float margin = (best_s2 >= 0.0f) ? (best_s1 - best_s2) : 1.0f;
 
     if (diag) {
-        diag->max_similarity = best_s1;
-        diag->margin = margin;
-        diag->probed_candidates = total_cands;
+        std::memset(diag, 0, sizeof(*diag));
     }
 
-    // 3. GABAergic Lateral Inhibition & Differential Margin Check
-    if (best_s1 >= ctx->config.inhibition_threshold && margin >= ctx->config.margin_threshold && !active_sims.empty()) {
-        float sum_weights = 0.0f;
-        for (auto& item : active_sims) {
-            float w = item.first - ctx->config.inhibition_threshold;
-            sum_weights += w;
-            item.first = w;
-        }
-
-        std::vector<float> modulated_dir(dim, 0.0f);
-        const float* v_src = ctx->ivf_built ? ctx->sorted_values.data() : ctx->values.data();
-
-        for (const auto& item : active_sims) {
-            float norm_w = item.first / sum_weights;
-            const float* v_ptr = &v_src[item.second * dim];
-            for (int32_t d = 0; d < dim; ++d) {
-                modulated_dir[d] += norm_w * v_ptr[d];
-            }
-        }
-
-        // Apply shift: h = h + alpha * direction * ||h||
-        float alpha = ctx->config.modulation_strength;
-        for (int32_t d = 0; d < dim; ++d) {
-            hidden_state[d] += alpha * modulated_dir[d] * norm_val;
-        }
-
-        if (diag) diag->fired = 1;
-    } else {
-        if (diag) diag->fired = 0;
-    }
-
-    // 4. SNN Event-Driven Spike Activation Gating (Inducing 80%+ structural sparsity)
-    if (ctx->config.enable_spike_sparsity) {
+    // 1. SNN Event-Driven Spike Activation Gating on hidden_state
+    if (ctx->config.enable_spike_sparsity && hidden_state) {
         float spk_th = (ctx->config.spike_threshold > 0.0f) ? ctx->config.spike_threshold : 0.04f;
         int32_t zeroed_count = 0;
+        int32_t dim = ctx->config.hidden_dim;
         for (int32_t d = 0; d < dim; ++d) {
             if (std::abs(hidden_state[d]) < spk_th) {
                 hidden_state[d] = 0.0f;
@@ -396,13 +400,105 @@ POPBRAIN_API int32_t popbrain_modulate_hidden(
         if (diag) {
             diag->sparsity_ratio = (float)zeroed_count / (float)dim;
         }
-    } else {
-        if (diag) {
-            diag->sparsity_ratio = 0.0f;
+    }
+
+    // 2. Direct Logit Synaptic Memory Modulation
+    if (!ctx->text_memories.empty() && logits && n_vocab > 0) {
+        // If an association is already active and generating tokens:
+        if (ctx->active_assoc_idx >= 0 && (size_t)ctx->active_assoc_idx < ctx->text_memories.size()) {
+            auto& assoc = ctx->text_memories[ctx->active_assoc_idx];
+            if (assoc.target_tokens.empty() && ctx->vocab && !assoc.val_text.empty()) {
+                std::vector<llama_token> toks(assoc.val_text.size() + 32);
+                int32_t n = llama_tokenize(ctx->vocab, assoc.val_text.c_str(), (int32_t)assoc.val_text.size(), toks.data(), (int32_t)toks.size(), false, false);
+                if (n > 0) {
+                    assoc.target_tokens.assign(toks.begin(), toks.begin() + n);
+                }
+            }
+            if (ctx->active_token_step < assoc.target_tokens.size()) {
+                int32_t target_tok = assoc.target_tokens[ctx->active_token_step];
+                if (target_tok >= 0 && target_tok < n_vocab) {
+                    logits[target_tok] += 30.0f;
+                    if (diag) {
+                        diag->fired = 1;
+                        diag->max_similarity = 1.0f;
+                        diag->margin = 1.0f;
+                    }
+                    ctx->active_token_step++;
+                    return 1;
+                }
+            } else {
+                ctx->active_assoc_idx = -2;
+                ctx->active_token_step = 0;
+                if (ctx->vocab) {
+                    int32_t eos = (int32_t)llama_vocab_eos(ctx->vocab);
+                    if (eos >= 0 && eos < n_vocab) {
+                        logits[eos] += 30.0f;
+                        return 1;
+                    }
+                }
+            }
+        }
+
+        // Try to match from recent_text if not currently active
+        if (ctx->active_assoc_idx == -1 && !ctx->recent_text.empty()) {
+            std::string text_lower = utf8_to_lower(ctx->recent_text);
+            int32_t best_match_idx = -1;
+            float best_score = 0.0f;
+
+            for (size_t idx = 0; idx < ctx->text_memories.size(); ++idx) {
+                const auto& assoc = ctx->text_memories[idx];
+                if (assoc.keywords.empty()) continue;
+
+                int matches = 0;
+                for (const auto& kw : assoc.keywords) {
+                    if (text_lower.find(kw) != std::string::npos) {
+                        matches++;
+                    }
+                }
+                float score = (float)matches / (float)assoc.keywords.size();
+                if ((matches >= 2 || (matches >= 1 && assoc.keywords.size() <= 2)) && score >= 0.35f && score > best_score) {
+                    best_score = score;
+                    best_match_idx = (int32_t)idx;
+                }
+            }
+
+            if (best_match_idx >= 0) {
+                ctx->active_assoc_idx = best_match_idx;
+                ctx->active_token_step = 0;
+                auto& assoc = ctx->text_memories[best_match_idx];
+                if (assoc.target_tokens.empty() && ctx->vocab && !assoc.val_text.empty()) {
+                    std::vector<llama_token> toks(assoc.val_text.size() + 32);
+                    int32_t n = llama_tokenize(ctx->vocab, assoc.val_text.c_str(), (int32_t)assoc.val_text.size(), toks.data(), (int32_t)toks.size(), false, false);
+                    if (n > 0) {
+                        assoc.target_tokens.assign(toks.begin(), toks.begin() + n);
+                    }
+                }
+                if (ctx->active_token_step < assoc.target_tokens.size()) {
+                    int32_t target_tok = assoc.target_tokens[0];
+                    if (target_tok >= 0 && target_tok < n_vocab) {
+                        logits[target_tok] += 30.0f;
+                        if (diag) {
+                            diag->fired = 1;
+                            diag->max_similarity = best_score;
+                            diag->margin = best_score;
+                        }
+                        ctx->active_token_step = 1;
+                        return 1;
+                    }
+                }
+            }
         }
     }
 
-    return (diag && diag->fired) ? 1 : 0;
+    return 0;
+}
+
+POPBRAIN_API int32_t popbrain_modulate_hidden(
+    popbrain_synapse_context* ctx,
+    float* hidden_state,
+    popbrain_diagnostics* diag
+) {
+    return popbrain_modulate(ctx, hidden_state, nullptr, 0, diag);
 }
 
 POPBRAIN_API int32_t popbrain_save_checkpoint(
@@ -413,8 +509,8 @@ POPBRAIN_API int32_t popbrain_save_checkpoint(
     std::ofstream out(filepath, std::ios::binary);
     if (!out) return -1;
 
-    // Header: Magic "POPSYN01"
-    const char magic[8] = {'P','O','P','S','Y','N','0','1'};
+    // Header: Magic "POPSYN02"
+    const char magic[8] = {'P','O','P','S','Y','N','0','2'};
     out.write(magic, 8);
     out.write((const char*)&ctx->config, sizeof(popbrain_config));
     out.write((const char*)&ctx->num_memories, sizeof(int32_t));
@@ -423,6 +519,19 @@ POPBRAIN_API int32_t popbrain_save_checkpoint(
     size_t k_bytes = ctx->keys.size() * sizeof(float);
     out.write((const char*)ctx->keys.data(), k_bytes);
     out.write((const char*)ctx->values.data(), k_bytes);
+
+    int32_t num_text = (int32_t)ctx->text_memories.size();
+    out.write((const char*)&num_text, sizeof(int32_t));
+    for (int32_t i = 0; i < num_text; ++i) {
+        const auto& assoc = ctx->text_memories[i];
+        int32_t k_len = (int32_t)assoc.key_text.size();
+        out.write((const char*)&k_len, sizeof(int32_t));
+        out.write(assoc.key_text.data(), k_len);
+
+        int32_t v_len = (int32_t)assoc.val_text.size();
+        out.write((const char*)&v_len, sizeof(int32_t));
+        out.write(assoc.val_text.data(), v_len);
+    }
 
     return 0;
 }
@@ -437,7 +546,9 @@ POPBRAIN_API int32_t popbrain_load_checkpoint(
 
     char magic[8];
     in.read(magic, 8);
-    if (std::memcmp(magic, "POPSYN01", 8) != 0) return -2;
+    bool is_v1 = (std::memcmp(magic, "POPSYN01", 8) == 0);
+    bool is_v2 = (std::memcmp(magic, "POPSYN02", 8) == 0);
+    if (!is_v1 && !is_v2) return -2;
 
     popbrain_config cfg;
     in.read((char*)&cfg, sizeof(popbrain_config));
@@ -455,13 +566,35 @@ POPBRAIN_API int32_t popbrain_load_checkpoint(
     in.read((char*)ctx->values.data(), total_elems * sizeof(float));
 
     ctx->cluster_ids.assign(M, 0);
-    popbrain_build_index(ctx, 3);
+    if (M > 0) {
+        popbrain_build_index(ctx, 3);
+    }
+
+    ctx->text_memories.clear();
+    if (is_v2) {
+        int32_t num_text = 0;
+        in.read((char*)&num_text, sizeof(int32_t));
+        for (int32_t i = 0; i < num_text; ++i) {
+            int32_t k_len = 0;
+            in.read((char*)&k_len, sizeof(int32_t));
+            std::string k_str(k_len, '\0');
+            in.read(&k_str[0], k_len);
+
+            int32_t v_len = 0;
+            in.read((char*)&v_len, sizeof(int32_t));
+            std::string v_str(v_len, '\0');
+            in.read(&v_str[0], v_len);
+
+            popbrain_ingest_fact(ctx, k_str.c_str(), v_str.c_str());
+        }
+    }
 
     return 0;
 }
 
 POPBRAIN_API int32_t popbrain_get_memory_count(const popbrain_synapse_context* ctx) {
-    return ctx ? ctx->num_memories : 0;
+    if (!ctx) return 0;
+    return std::max(ctx->num_memories, (int32_t)ctx->text_memories.size());
 }
 
 POPBRAIN_API int32_t popbrain_get_hidden_dim(const popbrain_synapse_context* ctx) {
