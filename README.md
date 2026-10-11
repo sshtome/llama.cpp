@@ -176,6 +176,21 @@ python scripts/run_synaptic_llm.py \
    - Open Chat and select `qwen2.5-coder-popbrain`.
 3. The model will respond with real-time synaptic modulation without expanding context window length.
 
+### Connecting to Cherry Studio (Ollama or OpenAI API):
+1. In Cherry Studio Settings -> **Model Providers**:
+   - **Ollama Provider**: set URL to `http://127.0.0.1:8088`. Click "Check" / "Manage Models" to automatically fetch models.
+   - **OpenAI Provider**: set Base URL to `http://127.0.0.1:8088/v1`, API Key can be any dummy string (e.g. `sk-popbrain`).
+2. Select model `qwen2.5-coder:1.5b` or `popbrain-synaptic-llm`.
+
+### Instant Fact Learning API (Zero-Backprop Online Learning):
+Teach the model new facts in real time without retraining or restarting:
+```bash
+curl -X POST http://127.0.0.1:8088/v1/memory/learn \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Как меня зовут?", "answer": "Тебя зовут Илья."}'
+```
+Or directly via the **Memorize Single Fact** panel in the Web UI (`http://127.0.0.1:8088/chat`).
+
 ### C++ Shared Library Integration in `llama_decode()`
 To embed directly into custom forks of `llama.cpp` or `llama-server`:
 

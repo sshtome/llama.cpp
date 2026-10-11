@@ -23,11 +23,11 @@ BANNER = r"""
   | |_) / _ \| '_ \|  _ \| '__/ _` | | '_ \ 
   |  __/ (_) | |_) | |_) | | | (_| | | | | |
   |_|   \___/| .__/|____/|_|  \__,_|_|_| |_|
-             |_|   SYNAPTIC LLM RUNTIME v1.3.0
+             |_|   SYNAPTIC LLM RUNTIME v1.3.6
 ========================================================================
   * Architecture: Zero-Backprop Hetero-Associative Voronoi Memory (IVF)
   * SNN Dynamics: Leaky Integrate-and-Fire Event-Driven Spike Activation Gating
-  * Endpoints: OpenAI API (http://{HOST}:{PORT}/v1) & Web UI (/chat)
+  * Endpoints: OpenAI API (http://{HOST}:{PORT}/v1), Ollama (http://{HOST}:{PORT}) & Web UI (/chat)
 ========================================================================
 """
 

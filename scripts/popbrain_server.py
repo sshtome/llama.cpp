@@ -37,7 +37,9 @@ except ImportError:
 
 from ingest_knowledge import scan_directory_for_knowledge
 
-app = FastAPI(title="PopBrain Synaptic LLM Server", version="1.3.4")
+app = FastAPI(title="PopBrain Synaptic LLM Server", version="1.3.6")
+
+DEFAULT_SYSTEM_PROMPT = "Ты — внимательный русскоязычный собеседник. Помни всё, о чем говорит собеседник в диалоге, и отвечай живо, вежливо, точно и по существу."
 
 # Enable CORS for Cherry Studio, LM Studio, OpenWebUI, and browser clients
 app.add_middleware(
@@ -176,7 +178,18 @@ def ingest_folder(folder_path: str, batch_size: int = 32) -> int:
 
     for b_start in range(0, len(items), batch_size):
         b_chunk = items[b_start : b_start + batch_size]
-        prompts = [f"Question: {it['question']}\nAnswer: {it['answer']}" for it in b_chunk]
+        prompts = []
+        for it in b_chunk:
+            msgs = [
+                {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
+                {"role": "user", "content": it["question"]},
+                {"role": "assistant", "content": it["answer"]}
+            ]
+            if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
+                prompts.append(tokenizer.apply_chat_template(msgs, tokenize=False))
+            else:
+                prompts.append(f"<|im_start|>system\n{DEFAULT_SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\n{it['question']}<|im_end|>\n<|im_start|>assistant\n{it['answer']}<|im_end|>\n")
+
         enc = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True, max_length=512, add_special_tokens=False).to(device)
 
         with torch.no_grad():
@@ -205,6 +218,32 @@ def ingest_folder(folder_path: str, batch_size: int = 32) -> int:
     return len(items)
 
 
+def ingest_fact(question: str, answer: str) -> int:
+    """Ingests a single Q&A fact into synaptic memory in milliseconds."""
+    global memory, model, tokenizer, device
+    msgs = [
+        {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
+        {"role": "user", "content": question},
+        {"role": "assistant", "content": answer}
+    ]
+    if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
+        prompt = tokenizer.apply_chat_template(msgs, tokenize=False)
+    else:
+        prompt = f"<|im_start|>system\n{DEFAULT_SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\n{question}<|im_end|>\n<|im_start|>assistant\n{answer}<|im_end|>\n"
+
+    enc = tokenizer([prompt], return_tensors="pt").to(device)
+    embed_layer = model.get_input_embeddings()
+    with torch.no_grad():
+        out = model(**enc, output_hidden_states=True)
+        h = out.hidden_states[-1][0]
+        e = embed_layer(enc.input_ids)[0]
+        k = h[:-1] / (torch.norm(h[:-1], dim=-1, keepdim=True) + 1e-6)
+        v = e[1:] / (torch.norm(e[1:], dim=-1, keepdim=True) + 1e-6)
+        memory.ingest_batch(k, v)
+        memory.build_ivf_index(iterations=2)
+    return k.shape[0]
+
+
 # Data Models
 class ChatMessage(BaseModel):
     role: str
@@ -215,7 +254,7 @@ class ChatCompletionRequest(BaseModel):
     model: Optional[str] = "popbrain-synaptic-llm"
     messages: List[ChatMessage]
     max_tokens: Optional[int] = 512
-    temperature: Optional[float] = 0.0
+    temperature: Optional[float] = 0.6
     repetition_penalty: Optional[float] = None
     synaptic_modulation: Optional[bool] = True
     stream: Optional[bool] = False
@@ -250,6 +289,12 @@ class IngestRequest(BaseModel):
     save_to: Optional[str] = None
 
 
+class LearnFactRequest(BaseModel):
+    question: Optional[str] = None
+    answer: Optional[str] = None
+    fact: Optional[str] = None
+
+
 class SaveMemoryRequest(BaseModel):
     file_path: str
 
@@ -261,7 +306,7 @@ class LoadMemoryRequest(BaseModel):
 def run_generation_stream(
     messages: List[Dict[str, str]],
     max_tokens: int = 512,
-    temperature: float = 0.0,
+    temperature: float = 0.6,
     rep_pen: float = 1.15,
     synaptic_modulation: bool = True
 ) -> Generator[Dict[str, Any], None, None]:
@@ -271,17 +316,32 @@ def run_generation_stream(
     """
     global model, tokenizer, memory, snn_enabled, snn_threshold
 
+    # Inject attentive system prompt if not present
+    has_system = any(m.get("role") == "system" for m in messages)
+    msgs = list(messages)
+    if not has_system:
+        msgs.insert(0, {
+            "role": "system",
+            "content": DEFAULT_SYSTEM_PROMPT
+        })
+
+    # Collect previous assistant tokens to prevent repeating boilerplate clichés
+    prev_asst_tokens = set()
+    for m in messages:
+        if m.get("role") == "assistant" and m.get("content"):
+            prev_asst_tokens.update(tokenizer.encode(m.get("content")))
+
     try:
         if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
-            prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            prompt = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
         else:
             prompt = ""
-            for msg in messages:
+            for msg in msgs:
                 prompt += f"<|im_start|>{msg.get('role', 'user')}\n{msg.get('content', '')}<|im_end|>\n"
             prompt += "<|im_start|>assistant\n"
     except Exception:
         prompt = ""
-        for msg in messages:
+        for msg in msgs:
             prompt += f"<|im_start|>{msg.get('role', 'user')}\n{msg.get('content', '')}<|im_end|>\n"
         prompt += "<|im_start|>assistant\n"
 
@@ -334,13 +394,21 @@ def run_generation_stream(
             else:
                 logits = out.logits[0, -1, :]
 
-            # 3. Repetition Penalty
+            # 3. Repetition Penalty on current generation
             if rep_pen and rep_pen != 1.0 and len(gen_tokens) > 0:
                 for token_id in set(gen_tokens):
                     if logits[token_id] < 0:
                         logits[token_id] *= rep_pen
                     else:
                         logits[token_id] /= rep_pen
+
+            # Anti-boilerplate cliché penalty for initial 6 tokens
+            if len(gen_tokens) < 6 and prev_asst_tokens:
+                for token_id in prev_asst_tokens:
+                    if logits[token_id] < 0:
+                        logits[token_id] *= 1.10
+                    else:
+                        logits[token_id] /= 1.10
 
             # 4. Sampling / Greedy
             if temperature and temperature > 0.0:
@@ -469,7 +537,7 @@ def ollama_chat(req: OllamaChatRequest):
     """Ollama /api/chat implementation supporting both streaming and non-streaming."""
     msgs = [{"role": m.role, "content": m.content} for m in req.messages]
     opts = req.options or {}
-    temperature = float(opts.get("temperature", 0.0))
+    temperature = float(opts.get("temperature", 0.6))
     rep_pen = float(opts.get("repeat_penalty", default_rep_penalty))
 
     if req.stream:
@@ -520,7 +588,7 @@ def ollama_generate(req: OllamaGenerateRequest):
     """Ollama /api/generate implementation."""
     msgs = [{"role": "user", "content": req.prompt}]
     opts = req.options or {}
-    temperature = float(opts.get("temperature", 0.0))
+    temperature = float(opts.get("temperature", 0.6))
     rep_pen = float(opts.get("repeat_penalty", default_rep_penalty))
 
     if req.stream:
@@ -617,7 +685,7 @@ def chat_completions(req: ChatCompletionRequest):
     """OpenAI chat completions supporting both streaming SSE and JSON."""
     msgs = [{"role": msg.role, "content": msg.content} for msg in req.messages]
     rep_pen = req.repetition_penalty if req.repetition_penalty is not None else default_rep_penalty
-    temp = req.temperature if req.temperature is not None else 0.0
+    temp = req.temperature if req.temperature is not None else 0.6
     syn_mod = req.synaptic_modulation if req.synaptic_modulation is not None else True
     req_id = f"chatcmpl-{int(time.time()*1000)}"
 
@@ -716,6 +784,29 @@ def api_ingest(req: IngestRequest):
     return {
         "status": "success",
         "items_ingested": count,
+        "total_associations": memory.num_memories
+    }
+
+
+@app.post("/v1/memory/learn")
+def api_learn_fact(req: LearnFactRequest):
+    q = req.question or ""
+    a = req.answer or ""
+    if not q and req.fact:
+        parts = req.fact.split("=", 1)
+        if len(parts) == 2:
+            q, a = parts[0].strip(), parts[1].strip()
+        else:
+            q = req.fact.strip()
+            a = req.fact.strip()
+    if not q or not a:
+        raise HTTPException(status_code=400, detail="Both question and answer must be provided.")
+    tokens_stored = ingest_fact(q, a)
+    return {
+        "status": "success",
+        "question": q,
+        "answer": a,
+        "tokens_stored": tokens_stored,
         "total_associations": memory.num_memories
     }
 
@@ -1013,6 +1104,14 @@ def chat_ui():
                 <div class="stat-val" id="vram-val">0.0 GB</div>
             </div>
 
+            <div class="panel-header">Memorize Single Fact</div>
+            <div class="tool-box">
+                <input type="text" id="learnQ" placeholder="Question, e.g. Как меня зовут?">
+                <input type="text" id="learnA" placeholder="Answer, e.g. Тебя зовут Илья.">
+                <button class="action-btn" onclick="learnFact()">Memorize Fact (0 Backprop)</button>
+                <div id="fact-status" style="font-size: 11px; color: var(--muted);"></div>
+            </div>
+
             <div class="panel-header">Memorize Folder / Repository</div>
             <div class="tool-box">
                 <input type="text" id="learnDir" placeholder="Path, e.g. D:\\projects\\my_app">
@@ -1085,6 +1184,28 @@ def chat_ui():
                 conversationHistory = [];
                 const chat = document.getElementById('chat');
                 chat.innerHTML = '<div class="msg assistant">PopBrain Synaptic Engine is active. Conversation reset. Ask any question or specify code to verify.</div>';
+            }
+
+            async function learnFact() {
+                const q = document.getElementById('learnQ').value.trim();
+                const a = document.getElementById('learnA').value.trim();
+                const st = document.getElementById('fact-status');
+                if (!q || !a) return;
+                st.innerText = 'Memorizing fact (0 backprop)...';
+                try {
+                    const res = await fetch('/v1/memory/learn', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({question: q, answer: a})
+                    });
+                    const d = await res.json();
+                    st.innerText = `Memorized! Total: ${d.total_associations.toLocaleString()} transitions`;
+                    document.getElementById('learnQ').value = '';
+                    document.getElementById('learnA').value = '';
+                    updateStats();
+                } catch(e) {
+                    st.innerText = 'Error: ' + e;
+                }
             }
 
             async function learnFolder() {
@@ -1175,7 +1296,7 @@ def chat_ui():
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({
                             messages: conversationHistory,
-                            temperature: 0.0,
+                            temperature: 0.6,
                             max_tokens: 512,
                             repetition_penalty: 1.15
                         })
