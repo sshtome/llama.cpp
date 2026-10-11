@@ -119,16 +119,38 @@ Ready-to-use shared libraries and self-test executables are compiled and publish
 
 ---
 
-## 🖥️ How to Use with LM Studio / llama-server
+---
 
-### Method A: Native OpenAI-Compatible Sidecar (Available Now)
-The fastest way to experience PopBrain inside **LM Studio**, **Cherry Studio**, or **Open WebUI**:
+## ⚡ One-Click Desktop & Web UI Launcher (Zero Setup)
 
-1. Start the PopBrain Synaptic Server:
-   ```bash
-   python popbrain/server.py --port 8088
-   ```
-2. In **LM Studio**:
+The easiest way for anyone to run local AI with synaptic memory out-of-the-box:
+
+### Windows:
+Simply double-click:
+```bat
+run_windows.bat
+```
+*(Or run `python scripts/run_synaptic_llm.py` in PowerShell)*
+
+### Linux / macOS:
+```bash
+chmod +x run_linux.sh
+./run_linux.sh
+```
+
+**What happens automatically:**
+1. Verifies/installs dependencies.
+2. Initializes `Qwen2.5-Coder` and loads the 67,000+ association synaptic memory into VRAM.
+3. Automatically launches the modern **Interactive Web Chat UI** in your browser at `http://127.0.0.1:8088/chat`.
+4. Opens standard OpenAI API endpoint at `http://127.0.0.1:8088/v1` for LM Studio, Cherry Studio, or Cursor.
+
+---
+
+## 🖥️ How to Use with LM Studio / Cherry Studio
+
+### Connecting to LM Studio:
+1. Start the launcher (`run_windows.bat` or `./run_linux.sh`).
+2. Open **LM Studio**:
    - Go to **Developer / My Models / External Providers**.
    - Add new endpoint: `http://127.0.0.1:8088/v1` (Model: `qwen2.5-coder-popbrain`).
    - Open Chat and select `qwen2.5-coder-popbrain`.
