@@ -1,0 +1,33 @@
+# CMake
+build/
+bin/
+lib/
+*.vcxproj*
+*.sln
+*.dir/
+CMakeScripts/
+Testing/
+Makefile
+*.cmake
+CMakeCache.txt
+
+# Binaries & Shared Libraries
+*.dll
+*.lib
+*.exp
+*.exe
+*.so
+*.dylib
+*.a
+
+# Memory Checkpoints
+*.synapse
+test_memory.synapse
+
+# IDE & OS
+.vs/
+.vscode/
+.idea/
+*.user
+Thumbs.db
+[Dd]esktop.ini
