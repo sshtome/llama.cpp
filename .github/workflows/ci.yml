@@ -36,39 +36,45 @@ jobs:
       if: matrix.os == 'windows-latest'
       run: |
         mkdir dist
+        cp build/Release/popbrain_cli.exe dist/
         cp build/Release/popbrain_synapse.dll dist/
         cp build/Release/popbrain_synapse.lib dist/
         cp build/Release/test_popbrain_synapse.exe dist/
         cp include/popbrain_synapse.h dist/
         cp run_windows.bat dist/
-        Copy-Item -Recurse scripts dist/scripts
         Compress-Archive -Path dist/* -DestinationPath popbrain-synapse-windows-x64.zip
+        cp build/Release/popbrain_cli.exe ./popbrain_cli.exe
 
     # Package Linux Artifacts
     - name: Package Linux Artifacts
       if: matrix.os == 'ubuntu-latest'
       run: |
         mkdir dist
+        cp build/popbrain_cli dist/
         cp build/libpopbrain_synapse.so dist/
         cp build/test_popbrain_synapse dist/
         cp include/popbrain_synapse.h dist/
         cp run_linux.sh dist/
-        cp -r scripts dist/
         tar -czvf popbrain-synapse-linux-x64.tar.gz -C dist .
+        cp build/popbrain_cli ./popbrain_cli-linux
 
     - name: Upload Windows Asset
       if: matrix.os == 'windows-latest'
       uses: actions/upload-artifact@v4
       with:
-        name: popbrain-synapse-windows-x64
-        path: popbrain-synapse-windows-x64.zip
+        name: popbrain-windows
+        path: |
+          popbrain-synapse-windows-x64.zip
+          popbrain_cli.exe
 
     - name: Upload Linux Asset
       if: matrix.os == 'ubuntu-latest'
       uses: actions/upload-artifact@v4
       with:
-        name: popbrain-synapse-linux-x64
-        path: popbrain-synapse-linux-x64.tar.gz
+        name: popbrain-linux
+        path: |
+          popbrain-synapse-linux-x64.tar.gz
+          popbrain_cli-linux
 
   release:
     name: Create GitHub Release
@@ -84,17 +90,19 @@ jobs:
     - name: Download Windows Artifact
       uses: actions/download-artifact@v4
       with:
-        name: popbrain-synapse-windows-x64
+        name: popbrain-windows
 
     - name: Download Linux Artifact
       uses: actions/download-artifact@v4
       with:
-        name: popbrain-synapse-linux-x64
+        name: popbrain-linux
 
     - name: Publish GitHub Release
       uses: softprops/action-gh-release@v2
       with:
         files: |
+          popbrain_cli.exe
+          popbrain_cli-linux
           popbrain-synapse-windows-x64.zip
           popbrain-synapse-linux-x64.tar.gz
         draft: false

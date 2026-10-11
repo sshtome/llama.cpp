@@ -2,13 +2,15 @@
 set -e
 
 echo "========================================================"
-echo "  PopBrain Synaptic LLM - Zero-Backprop Local AI"
+echo "  PopBrain Synaptic LLM - Native C++ Management CLI"
 echo "========================================================"
 
-if ! command -v python3 &> /dev/null; then
-    echo "[ERROR] python3 is not installed or not in PATH!"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$DIR/popbrain_cli" ]; then
+    "$DIR/popbrain_cli" "$@"
+elif [ -f "$DIR/build/popbrain_cli" ]; then
+    "$DIR/build/popbrain_cli" "$@"
+else
+    echo "[ERROR] popbrain_cli not found! Please compile with CMake."
     exit 1
 fi
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-python3 "$SCRIPT_DIR/scripts/run_synaptic_llm.py" "$@"

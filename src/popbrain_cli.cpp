@@ -11,17 +11,19 @@
 
 static void print_usage(const char* prog) {
     std::cout << "========================================================================\n"
-              << " PopBrain Synaptic LLM - Native C++ Management CLI v1.4.0\n"
+              << " PopBrain Synaptic LLM - Native C++ Management CLI v1.5.0\n"
               << "========================================================================\n"
               << "Usage:\n"
               << "  " << prog << " --info <memory.synapse>\n"
               << "  " << prog << " --benchmark <memory.synapse> [num_queries]\n"
               << "  " << prog << " --create <memory.synapse> [--dim <dim>] [--clusters <C>]\n"
+              << "  " << prog << " --populate <memory.synapse> <count> [--dim <dim>] [--clusters <C>]\n"
               << "\nCommands:\n"
-              << "  --info <path>       Inspect binary header, Voronoi geometry, and memory count\n"
-              << "  --benchmark <path>  Run C++ retrieval latency and lateral inhibition benchmarks\n"
-              << "  --create <path>     Create a clean initialized .synapse memory checkpoint\n"
-              << "  --help, -h          Show this help message\n"
+              << "  --info <path>           Inspect binary header, Voronoi geometry, and memory count\n"
+              << "  --benchmark <path>      Run C++ retrieval latency and lateral inhibition benchmarks\n"
+              << "  --create <path>         Create a clean initialized .synapse memory checkpoint\n"
+              << "  --populate <path> <cnt> Populate with N transitions and build Voronoi index\n"
+              << "  --help, -h              Show this help message\n"
               << "========================================================================\n";
 }
 
@@ -165,6 +167,45 @@ static int create_checkpoint(const std::string& path, int dim, int clusters) {
     return 0;
 }
 
+static int populate_checkpoint(const std::string& path, int count, int dim, int clusters) {
+    popbrain_config cfg;
+    cfg.hidden_dim = dim;
+    cfg.num_clusters = clusters;
+    cfg.nprobe = 4;
+    cfg.inhibition_threshold = 0.82f;
+    cfg.margin_threshold = 0.015f;
+    cfg.modulation_strength = 0.25f;
+    cfg.enable_spike_sparsity = 1;
+    cfg.spike_threshold = 0.04f;
+    cfg.use_cuda = 0;
+    cfg.device_id = 0;
+
+    popbrain_synapse_context* ctx = popbrain_init(&cfg);
+    if (!ctx) return 1;
+
+    std::cout << "[*] Ingesting " << count << " transitions (dim=" << dim << ")..." << std::endl;
+    std::vector<float> k(dim), v(dim);
+    for (int i = 0; i < count; ++i) {
+        for (int d = 0; d < dim; ++d) {
+            k[d] = ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f;
+            v[d] = ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f;
+        }
+        popbrain_ingest_transition(ctx, k.data(), v.data());
+    }
+
+    std::cout << "[*] Building Spherical Voronoi index (IVF-" << clusters << ")..." << std::endl;
+    popbrain_build_index(ctx, 3);
+
+    if (popbrain_save_checkpoint(ctx, path.c_str()) != 0) {
+        std::cerr << "[ERROR] Failed to save checkpoint to: " << path << std::endl;
+        popbrain_free(ctx);
+        return 1;
+    }
+    std::cout << "[+] Saved " << count << " transitions to: " << path << std::endl;
+    popbrain_free(ctx);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         print_usage(argv[0]);
@@ -194,7 +235,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::string path = argv[2];
-        int dim = 1536;
+        int dim = 2048;
         int clusters = 128;
         for (int i = 3; i < argc; ++i) {
             std::string arg = argv[i];
@@ -202,6 +243,21 @@ int main(int argc, char** argv) {
             else if (arg == "--clusters" && i + 1 < argc) clusters = std::atoi(argv[++i]);
         }
         return create_checkpoint(path, dim, clusters);
+    } else if (cmd == "--populate") {
+        if (argc < 4) {
+            std::cerr << "Usage: " << argv[0] << " --populate <memory.synapse> <count> [--dim <dim>] [--clusters <C>]" << std::endl;
+            return 1;
+        }
+        std::string path = argv[2];
+        int count = std::atoi(argv[3]);
+        int dim = 2048;
+        int clusters = 128;
+        for (int i = 4; i < argc; ++i) {
+            std::string arg = argv[i];
+            if (arg == "--dim" && i + 1 < argc) dim = std::atoi(argv[++i]);
+            else if (arg == "--clusters" && i + 1 < argc) clusters = std::atoi(argv[++i]);
+        }
+        return populate_checkpoint(path, count, dim, clusters);
     } else {
         std::cerr << "Unknown command: " << cmd << std::endl;
         print_usage(argv[0]);
