@@ -19,11 +19,18 @@ from typing import List, Dict, Optional, Any, Generator
 
 import torch
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 # Ensure current scripts directory is in sys.path
 scripts_dir = os.path.dirname(os.path.abspath(__file__))
@@ -37,11 +44,11 @@ except ImportError:
 
 from ingest_knowledge import scan_directory_for_knowledge
 
-app = FastAPI(title="PopBrain Synaptic LLM Server", version="1.3.6")
+app = FastAPI(title="PopBrain Synaptic LLM Server", version="1.4.0")
 
 DEFAULT_SYSTEM_PROMPT = "Ты — внимательный русскоязычный собеседник. Помни всё, о чем говорит собеседник в диалоге, и отвечай живо, вежливо, точно и по существу."
 
-# Enable CORS for Cherry Studio, LM Studio, OpenWebUI, and browser clients
+# Enable CORS for Cherry Studio, LM Studio, OpenWebUI, and API clients
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -52,27 +59,23 @@ app.add_middleware(
 
 # Runtime state
 device = "cuda" if torch.cuda.is_available() else "cpu"
-default_cache_dir = r"C:\Users\ilya\.cache\huggingface\hub\models--Qwen--Qwen2.5-Coder-1.5B-Instruct\snapshots\2e1fd397ee46e1388853d2af2c993145b0f1098a"
-default_model_path = default_cache_dir if os.path.exists(default_cache_dir) else "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+cache_dir_3b = r"C:\Users\ilya\.cache\huggingface\hub\models--Qwen--Qwen2.5-Coder-3B-Instruct\snapshots\488639f1ff808d1d3d0ba301aef8c11461451ec5"
+cache_dir_1_5b = r"C:\Users\ilya\.cache\huggingface\hub\models--Qwen--Qwen2.5-Coder-1.5B-Instruct\snapshots\2e1fd397ee46e1388853d2af2c993145b0f1098a"
+if os.path.exists(cache_dir_3b):
+    default_model_path = cache_dir_3b
+elif os.path.exists(cache_dir_1_5b):
+    default_model_path = cache_dir_1_5b
+else:
+    default_model_path = "Qwen/Qwen2.5-Coder-3B-Instruct"
 
-candidate_checkpoints = [
-    os.path.join(os.path.dirname(scripts_dir), "assets", "popbrain_qwen_synaptic_memory.pt"),
-    r"D:\projects\popbrain\assets\popbrain_qwen_synaptic_memory.pt",
-    os.path.join(scripts_dir, "popbrain_qwen_synaptic_memory.pt"),
-    "memory.synapse"
-]
 default_checkpoint = None
-for cp in candidate_checkpoints:
-    if os.path.exists(cp):
-        default_checkpoint = cp
-        break
 
 tokenizer = None
 model = None
 memory: Optional[PopBrainScale10kMemory] = None
 snn_enabled: bool = False
 snn_threshold: float = 0.04
-current_model_name: str = "Qwen2.5-Coder-1.5B-Instruct"
+current_model_name: str = "Qwen2.5-Coder-3B-Instruct"
 default_rep_penalty: float = 1.15
 saved_checkpoint_path: Optional[str] = None
 
@@ -82,6 +85,9 @@ def init_runtime(
     checkpoint_path: Optional[str] = default_checkpoint,
     save_memory_path: Optional[str] = None,
     learn_dir: Optional[str] = None,
+    learn_fact_str: Optional[str] = None,
+    learn_file_path: Optional[str] = None,
+    learn_only: bool = False,
     enable_spike: bool = False,
     spike_th: float = 0.04,
     modulation_strength: float = 0.25,
@@ -125,7 +131,13 @@ def init_runtime(
 
     hidden_dim = model.config.hidden_size
     name_candidate = getattr(model.config, "_name_or_path", "")
-    if "Qwen" in model_path or "qwen" in model_path or "Qwen" in str(name_candidate):
+    if "3B" in model_path or "3b" in model_path or "3B" in str(name_candidate):
+        current_model_name = "Qwen2.5-Coder-3B-Instruct"
+    elif "7B" in model_path or "7b" in model_path:
+        current_model_name = "Qwen2.5-Coder-7B-Instruct"
+    elif "14B" in model_path or "14b" in model_path:
+        current_model_name = "Qwen2.5-Coder-14B-Instruct"
+    elif "1.5B" in model_path or "1.5b" in model_path:
         current_model_name = "Qwen2.5-Coder-1.5B-Instruct"
     elif name_candidate and not ("snapshots" in name_candidate or len(name_candidate) > 40):
         current_model_name = os.path.basename(name_candidate.rstrip("\\/"))
@@ -136,7 +148,7 @@ def init_runtime(
             if p.startswith("models--"):
                 clean_name = p.replace("models--", "").replace("--", "/")
                 break
-        current_model_name = clean_name if clean_name else "Qwen2.5-Coder-1.5B-Instruct"
+        current_model_name = clean_name if clean_name else "Qwen2.5-Coder-3B-Instruct"
 
     print(f"[*] Initializing PopBrain Synaptic Memory (dim={hidden_dim}, clusters={num_clusters}, nprobe={nprobe}, alpha={modulation_strength})...")
     memory = PopBrainScale10kMemory(
@@ -155,6 +167,28 @@ def init_runtime(
     else:
         print("[*] Starting with clean synaptic state.")
 
+    if learn_fact_str:
+        parts = learn_fact_str.split("=", 1)
+        if len(parts) == 2:
+            q, a = parts[0].strip(), parts[1].strip()
+        else:
+            q, a = learn_fact_str.strip(), learn_fact_str.strip()
+        print(f"[*] Memorizing fact from CLI: '{q}' -> '{a}'...")
+        ingest_fact(q, a)
+        if save_memory_path:
+            memory.save_memory(save_memory_path)
+            print(f"[+] Saved updated synaptic memory to: {save_memory_path}")
+
+    if learn_file_path:
+        if os.path.exists(learn_file_path):
+            print(f"[*] Memorizing file: {learn_file_path}...")
+            ingest_file(learn_file_path)
+            if save_memory_path:
+                memory.save_memory(save_memory_path)
+                print(f"[+] Saved updated synaptic memory to: {save_memory_path}")
+        else:
+            print(f"[!] Warning: File '{learn_file_path}' does not exist.")
+
     if learn_dir:
         if os.path.exists(learn_dir):
             print(f"[*] Memorizing directory: {learn_dir}...")
@@ -164,6 +198,33 @@ def init_runtime(
                 print(f"[+] Saved updated synaptic memory to: {save_memory_path}")
         else:
             print(f"[!] Warning: Directory '{learn_dir}' does not exist, skipping ingestion.")
+
+    if learn_only:
+        print(f"\n[+] Offline memorization complete! Synaptic memory saved to: {save_memory_path} ({memory.num_memories} associations)")
+        sys.exit(0)
+
+
+def ingest_file(file_path: str) -> int:
+    """Ingests a file (.json or text) into synaptic memory."""
+    count = 0
+    if file_path.endswith(".json"):
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            for it in data:
+                if isinstance(it, dict) and "question" in it and "answer" in it:
+                    ingest_fact(it["question"], it["answer"])
+                    count += 1
+    else:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+        for ln in lines:
+            ln = ln.strip()
+            if "=" in ln:
+                q, a = ln.split("=", 1)
+                ingest_fact(q.strip(), a.strip())
+                count += 1
+    return count
 
 
 def ingest_folder(folder_path: str, batch_size: int = 32) -> int:
@@ -846,481 +907,29 @@ def api_clear_memory():
 
 
 # =========================================================================
-# WEB CHAT INTERFACE (Served on both / and /chat)
+# ROOT SERVER STATUS ENDPOINT (Headless - No Web UI)
 # =========================================================================
 
-@app.get("/", response_class=HTMLResponse)
-@app.get("/chat", response_class=HTMLResponse)
-def chat_ui():
-    html_content = """
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>PopBrain Synaptic LLM Web UI</title>
-        <style>
-            :root {
-                --bg: #0b0f19;
-                --panel: #131b2e;
-                --accent: #38bdf8;
-                --synapse: #10b981;
-                --text: #f8fafc;
-                --muted: #94a3b8;
-                --border: #1e293b;
-            }
-            body {
-                margin: 0;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                background: var(--bg);
-                color: var(--text);
-                display: flex;
-                height: 100vh;
-            }
-            .sidebar {
-                width: 360px;
-                background: var(--panel);
-                border-right: 1px solid var(--border);
-                padding: 20px;
-                box-sizing: border-box;
-                display: flex;
-                flex-direction: column;
-                gap: 14px;
-                overflow-y: auto;
-            }
-            .brand {
-                display: flex;
-                align-items: center;
-                gap: 10px;
-            }
-            .brand-title {
-                font-size: 18px;
-                font-weight: 700;
-                color: var(--accent);
-                letter-spacing: -0.3px;
-            }
-            .badge-online {
-                background: rgba(16, 185, 129, 0.2);
-                color: #34d399;
-                border: 1px solid rgba(16, 185, 129, 0.4);
-                font-size: 11px;
-                padding: 2px 8px;
-                border-radius: 999px;
-                font-weight: 600;
-            }
-            .stat-box {
-                background: #0b0f19;
-                padding: 12px;
-                border-radius: 8px;
-                border: 1px solid var(--border);
-                font-size: 12px;
-            }
-            .stat-title {
-                color: var(--muted);
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                font-size: 11px;
-            }
-            .stat-val {
-                font-size: 16px;
-                font-weight: bold;
-                color: var(--synapse);
-                margin-top: 4px;
-            }
-            .panel-header {
-                font-size: 11px;
-                font-weight: bold;
-                color: var(--muted);
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                margin-top: 6px;
-            }
-            .tool-box {
-                background: #0b0f19;
-                padding: 12px;
-                border-radius: 8px;
-                border: 1px solid var(--border);
-                display: flex;
-                flex-direction: column;
-                gap: 8px;
-            }
-            .tool-box input {
-                background: #1a233a;
-                border: 1px solid var(--border);
-                color: var(--text);
-                padding: 8px 10px;
-                border-radius: 6px;
-                font-size: 12px;
-                outline: none;
-            }
-            .action-btn {
-                background: var(--synapse);
-                color: #0b0f19;
-                border: none;
-                padding: 8px;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 12px;
-                cursor: pointer;
-            }
-            .action-btn:hover { opacity: 0.9; }
-            .sec-btn {
-                background: #1e293b;
-                color: var(--text);
-                border: 1px solid #334155;
-                padding: 6px 12px;
-                border-radius: 6px;
-                font-size: 12px;
-                font-weight: 600;
-                cursor: pointer;
-            }
-            .sec-btn:hover { background: #334155; }
-            .main {
-                flex: 1;
-                display: flex;
-                flex-direction: column;
-                height: 100vh;
-            }
-            .top-bar {
-                padding: 14px 24px;
-                background: var(--panel);
-                border-bottom: 1px solid var(--border);
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-            }
-            .chips-bar {
-                display: flex;
-                gap: 8px;
-                flex-wrap: wrap;
-                padding: 10px 24px;
-                background: rgba(19, 27, 46, 0.6);
-                border-bottom: 1px solid var(--border);
-            }
-            .chip {
-                background: #1e293b;
-                border: 1px solid #334155;
-                color: var(--accent);
-                padding: 4px 10px;
-                border-radius: 999px;
-                font-size: 12px;
-                cursor: pointer;
-                transition: background 0.15s;
-            }
-            .chip:hover {
-                background: #334155;
-            }
-            .messages {
-                flex: 1;
-                overflow-y: auto;
-                padding: 24px;
-                display: flex;
-                flex-direction: column;
-                gap: 16px;
-            }
-            .msg {
-                max-width: 80%;
-                padding: 14px 18px;
-                border-radius: 12px;
-                line-height: 1.6;
-                white-space: pre-wrap;
-                font-size: 14px;
-            }
-            .msg.user {
-                background: #0284c7;
-                align-self: flex-end;
-            }
-            .msg.assistant {
-                background: #131b2e;
-                border: 1px solid var(--border);
-                align-self: flex-start;
-            }
-            .synapse-hud {
-                display: inline-block;
-                background: rgba(16, 185, 129, 0.15);
-                color: #34d399;
-                border: 1px solid rgba(16, 185, 129, 0.4);
-                padding: 2px 8px;
-                border-radius: 4px;
-                font-size: 11px;
-                margin-bottom: 8px;
-            }
-            .input-bar {
-                padding: 16px 24px;
-                background: var(--panel);
-                border-top: 1px solid var(--border);
-                display: flex;
-                gap: 10px;
-            }
-            input[type="text"]#userInput {
-                flex: 1;
-                background: #0b0f19;
-                border: 1px solid var(--border);
-                border-radius: 8px;
-                padding: 12px 16px;
-                color: var(--text);
-                font-size: 14px;
-                outline: none;
-            }
-            .send-btn {
-                background: var(--accent);
-                color: #0b0f19;
-                border: none;
-                border-radius: 8px;
-                padding: 0 20px;
-                font-weight: bold;
-                font-size: 14px;
-                cursor: pointer;
-            }
-            .send-btn:hover { opacity: 0.9; }
-        </style>
-    </head>
-    <body>
-        <div class="sidebar">
-            <div class="brand">
-                <span class="brand-title">PopBrain Synaptic LLM</span>
-                <span class="badge-online" id="status-pill">ONLINE</span>
-            </div>
-            
-            <div class="stat-box">
-                <div class="stat-title">Active Model</div>
-                <div class="stat-val" id="model-val" style="color: var(--accent);">Loading...</div>
-            </div>
-
-            <div class="stat-box">
-                <div class="stat-title">Synaptic Memory Index</div>
-                <div class="stat-val" id="mem-count">0 transitions</div>
-                <div style="color: var(--muted); font-size: 11px; margin-top: 4px;">Spherical Voronoi IVF Routing</div>
-            </div>
-
-            <div class="stat-box">
-                <div class="stat-title">SNN Spike Sparsity Gating</div>
-                <div class="stat-val" id="snn-val">Active (LIF Gating)</div>
-                <div style="color: var(--muted); font-size: 11px; margin-top: 4px;">Sub-threshold noise suppressed</div>
-            </div>
-
-            <div class="stat-box">
-                <div class="stat-title">Hardware Memory (VRAM)</div>
-                <div class="stat-val" id="vram-val">0.0 GB</div>
-            </div>
-
-            <div class="panel-header">Memorize Single Fact</div>
-            <div class="tool-box">
-                <input type="text" id="learnQ" placeholder="Question, e.g. Как меня зовут?">
-                <input type="text" id="learnA" placeholder="Answer, e.g. Тебя зовут Илья.">
-                <button class="action-btn" onclick="learnFact()">Memorize Fact (0 Backprop)</button>
-                <div id="fact-status" style="font-size: 11px; color: var(--muted);"></div>
-            </div>
-
-            <div class="panel-header">Memorize Folder / Repository</div>
-            <div class="tool-box">
-                <input type="text" id="learnDir" placeholder="Path, e.g. D:\\projects\\my_app">
-                <button class="action-btn" onclick="learnFolder()">Memorize Folder (0 Backprop)</button>
-                <div id="ingest-status" style="font-size: 11px; color: var(--muted);"></div>
-            </div>
-
-            <div class="panel-header">Memory Checkpoint (.synapse)</div>
-            <div class="tool-box">
-                <input type="text" id="ckptPath" placeholder="Path, e.g. memory.synapse">
-                <div style="display: flex; gap: 6px;">
-                    <button class="sec-btn" style="flex:1;" onclick="saveMemory()">Save</button>
-                    <button class="sec-btn" style="flex:1;" onclick="loadMemory()">Load</button>
-                    <button class="sec-btn" style="color: #ef4444;" onclick="clearMemory()">Clear</button>
-                </div>
-                <div id="ckpt-status" style="font-size: 11px; color: var(--muted);"></div>
-            </div>
-        </div>
-
-        <div class="main">
-            <div class="top-bar">
-                <div style="font-size: 14px; font-weight: 600; color: var(--text);">
-                    OpenAI Endpoint: <code style="color: var(--accent);">http://127.0.0.1:8088/v1</code> &nbsp;|&nbsp; Ollama: <code style="color: var(--synapse);">http://127.0.0.1:8088</code>
-                </div>
-                <button class="sec-btn" onclick="clearChat()">Reset Chat</button>
-            </div>
-
-            <div class="chips-bar">
-                <span style="font-size: 12px; color: var(--muted); line-height: 24px;">Quick questions:</span>
-                <span class="chip" onclick="askChip('Привет, как тебя зовут?')">Привет, как тебя зовут?</span>
-                <span class="chip" onclick="askChip('Что такое синаптическая память PopBrain?')">Что такое синаптическая память PopBrain?</span>
-                <span class="chip" onclick="askChip('Какова архитектура Voronoi IVF?')">Архитектура Voronoi IVF?</span>
-            </div>
-
-            <div class="messages" id="chat">
-                <div class="msg assistant">PopBrain Synaptic Engine is active. Model retrieves factual knowledge in-flight via lateral inhibition and SNN spike activation gating. You can chat here directly, or connect Cherry Studio / LM Studio via OpenAI or Ollama endpoints.</div>
-            </div>
-
-            <div class="input-bar">
-                <input type="text" id="userInput" placeholder="Ask a question..." onkeydown="if(event.key==='Enter') send()">
-                <button class="send-btn" onclick="send()">Send</button>
-            </div>
-        </div>
-
-        <script>
-            let conversationHistory = [];
-
-            async function updateStats() {
-                try {
-                    const res = await fetch('/health');
-                    const data = await res.json();
-                    document.getElementById('model-val').innerText = data.model;
-                    document.getElementById('mem-count').innerText = data.synaptic_memories.toLocaleString() + ' transitions';
-                    document.getElementById('snn-val').innerText = data.snn_active ? 'Enabled (80%+ Sparsity)' : 'Disabled';
-                    document.getElementById('vram-val').innerText = data.vram_gb + ' GB';
-                    document.getElementById('status-pill').innerText = 'ONLINE';
-                } catch(e){
-                    document.getElementById('status-pill').innerText = 'CONNECTING...';
-                }
-            }
-            setInterval(updateStats, 4000);
-            updateStats();
-
-            function askChip(q) {
-                document.getElementById('userInput').value = q;
-                send();
-            }
-
-            function clearChat() {
-                conversationHistory = [];
-                const chat = document.getElementById('chat');
-                chat.innerHTML = '<div class="msg assistant">PopBrain Synaptic Engine is active. Conversation reset. Ask any question or specify code to verify.</div>';
-            }
-
-            async function learnFact() {
-                const q = document.getElementById('learnQ').value.trim();
-                const a = document.getElementById('learnA').value.trim();
-                const st = document.getElementById('fact-status');
-                if (!q || !a) return;
-                st.innerText = 'Memorizing fact (0 backprop)...';
-                try {
-                    const res = await fetch('/v1/memory/learn', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({question: q, answer: a})
-                    });
-                    const d = await res.json();
-                    st.innerText = `Memorized! Total: ${d.total_associations.toLocaleString()} transitions`;
-                    document.getElementById('learnQ').value = '';
-                    document.getElementById('learnA').value = '';
-                    updateStats();
-                } catch(e) {
-                    st.innerText = 'Error: ' + e;
-                }
-            }
-
-            async function learnFolder() {
-                const path = document.getElementById('learnDir').value.trim();
-                const st = document.getElementById('ingest-status');
-                if (!path) return;
-                st.innerText = 'Memorizing documents (0 backprop)...';
-                try {
-                    const res = await fetch('/v1/memory/ingest', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({folder_path: path})
-                    });
-                    const d = await res.json();
-                    st.innerText = `Memorized ${d.items_ingested} items! Total: ${d.total_associations.toLocaleString()}`;
-                    updateStats();
-                } catch(e) {
-                    st.innerText = 'Error: ' + e;
-                }
-            }
-
-            async function saveMemory() {
-                const p = document.getElementById('ckptPath').value.trim();
-                const st = document.getElementById('ckpt-status');
-                if (!p) return;
-                st.innerText = 'Saving checkpoint...';
-                try {
-                    const res = await fetch('/v1/memory/save', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({file_path: p})
-                    });
-                    const d = await res.json();
-                    st.innerText = 'Saved ' + d.total_associations.toLocaleString() + ' transitions!';
-                } catch(e) { st.innerText = 'Error: ' + e; }
-            }
-
-            async function loadMemory() {
-                const p = document.getElementById('ckptPath').value.trim();
-                const st = document.getElementById('ckpt-status');
-                if (!p) return;
-                st.innerText = 'Loading checkpoint...';
-                try {
-                    const res = await fetch('/v1/memory/load', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({file_path: p})
-                    });
-                    const d = await res.json();
-                    st.innerText = 'Loaded ' + d.total_associations.toLocaleString() + ' transitions!';
-                    updateStats();
-                } catch(e) { st.innerText = 'Error: ' + e; }
-            }
-
-            async function clearMemory() {
-                if (!confirm('Clear all synaptic memories in RAM?')) return;
-                const st = document.getElementById('ckpt-status');
-                try {
-                    await fetch('/v1/memory/clear', {method: 'POST'});
-                    st.innerText = 'Memory cleared.';
-                    updateStats();
-                } catch(e) { st.innerText = 'Error: ' + e; }
-            }
-
-            async function send() {
-                const inp = document.getElementById('userInput');
-                const text = inp.value.trim();
-                if (!text) return;
-                inp.value = '';
-
-                conversationHistory.push({role: 'user', content: text});
-
-                const chat = document.getElementById('chat');
-                const uMsg = document.createElement('div');
-                uMsg.className = 'msg user';
-                uMsg.innerText = text;
-                chat.appendChild(uMsg);
-
-                const aMsg = document.createElement('div');
-                aMsg.className = 'msg assistant';
-                aMsg.innerHTML = '<i>Thinking...</i>';
-                chat.appendChild(aMsg);
-                chat.scrollTop = chat.scrollHeight;
-
-                try {
-                    const res = await fetch('/v1/chat/completions', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({
-                            messages: conversationHistory,
-                            temperature: 0.6,
-                            max_tokens: 512,
-                            repetition_penalty: 1.15
-                        })
-                    });
-                    const data = await res.json();
-                    const reply = (data.choices && data.choices[0] && data.choices[0].message) ? data.choices[0].message.content : 'No response';
-                    conversationHistory.push({role: 'assistant', content: reply});
-
-                    const diag = data.synaptic_diagnostics || {};
-                    let badge = '';
-                    if (diag.fired_steps > 0) {
-                        badge = `<div class="synapse-hud">Synapse Active: ${diag.fired_steps} tokens | Sim: ${diag.max_cosine_similarity} | Sparsity: ${(diag.sparsity_ratio * 100).toFixed(1)}%</div><br>`;
-                    }
-                    aMsg.innerHTML = badge + reply.replace(/\\n/g, '<br>');
-                } catch(e) {
-                    aMsg.innerText = 'Error: ' + e;
-                }
-                chat.scrollTop = chat.scrollHeight;
-            }
-        </script>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html_content)
+@app.get("/")
+def root_status():
+    return {
+        "status": "online",
+        "runtime": "PopBrain Synaptic LLM Runtime v1.4.0",
+        "model": current_model_name,
+        "synaptic_memories": memory.num_memories if memory else 0,
+        "snn_active": snn_enabled,
+        "snn_threshold": snn_threshold,
+        "endpoints": {
+            "openai_chat": "/v1/chat/completions",
+            "openai_models": "/v1/models",
+            "ollama_tags": "/api/tags",
+            "ollama_chat": "/api/chat",
+            "ollama_generate": "/api/generate",
+            "health": "/health",
+            "memory_learn": "/v1/memory/learn",
+            "memory_ingest": "/v1/memory/ingest"
+        }
+    }
 
 
 def main():
@@ -1334,6 +943,9 @@ def main():
     parser.add_argument("--checkpoint", "--memory", "-c", type=str, default=default_checkpoint, help="Path to .synapse memory checkpoint")
     parser.add_argument("--save-memory", type=str, default=None, help="Save resulting memory checkpoint to path after ingestion/startup")
     parser.add_argument("--learn-dir", "-d", type=str, default=None, help="Directory to ingest into synaptic memory (0 backprop)")
+    parser.add_argument("--learn-fact", type=str, default=None, help="Memorize a single fact (format: 'Question=Answer')")
+    parser.add_argument("--learn-file", type=str, default=None, help="Path to file with facts to memorize")
+    parser.add_argument("--learn-only", action="store_true", help="Exit after memorizing and saving checkpoint without starting server")
     parser.add_argument("--spike", "-s", action="store_true", help="Enable SNN Event-Driven Spike Activation Gating")
     parser.add_argument("--no-spike", action="store_true", help="Disable SNN Spike Activation Gating")
     parser.add_argument("--spike-th", type=float, default=0.04, help="LIF Spike activation threshold V_th (yields 80%%+ sparsity)")
@@ -1356,6 +968,9 @@ def main():
         checkpoint_path=args.checkpoint,
         save_memory_path=args.save_memory,
         learn_dir=args.learn_dir,
+        learn_fact_str=args.learn_fact,
+        learn_file_path=args.learn_file,
+        learn_only=args.learn_only,
         enable_spike=enable_spike,
         spike_th=args.spike_th,
         modulation_strength=args.modulation_strength,

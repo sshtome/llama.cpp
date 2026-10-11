@@ -16,6 +16,13 @@ import json
 import urllib.request
 import webbrowser
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 BANNER = r"""
 ========================================================================
    ____             ____            _       
@@ -23,11 +30,11 @@ BANNER = r"""
   | |_) / _ \| '_ \|  _ \| '__/ _` | | '_ \ 
   |  __/ (_) | |_) | |_) | | | (_| | | | | |
   |_|   \___/| .__/|____/|_|  \__,_|_|_| |_|
-             |_|   SYNAPTIC LLM RUNTIME v1.3.6
+             |_|   SYNAPTIC LLM RUNTIME v1.4.0
 ========================================================================
   * Architecture: Zero-Backprop Hetero-Associative Voronoi Memory (IVF)
   * SNN Dynamics: Leaky Integrate-and-Fire Event-Driven Spike Activation Gating
-  * Endpoints: OpenAI API (http://{HOST}:{PORT}/v1), Ollama (http://{HOST}:{PORT}) & Web UI (/chat)
+  * Endpoints: OpenAI API (http://{HOST}:{PORT}/v1) & Ollama (http://{HOST}:{PORT}) [Headless]
 ========================================================================
 """
 
@@ -56,6 +63,8 @@ def main():
     parser.add_argument("--memory", "--checkpoint", "-c", type=str, default=None, help="Path to .synapse memory checkpoint")
     parser.add_argument("--save-memory", type=str, default=None, help="Path to save memory checkpoint after ingestion")
     parser.add_argument("--learn-dir", "-d", type=str, default=None, help="Directory/repository to ingest into memory (0 backprop)")
+    parser.add_argument("--learn-fact", type=str, default=None, help="Memorize single fact from CLI (format: 'Question=Answer')")
+    parser.add_argument("--learn-file", type=str, default=None, help="File containing facts or text to ingest")
     parser.add_argument("--spike", "-s", action="store_true", help="Enable SNN Spike Activation Gating for memory saving")
     parser.add_argument("--no-spike", action="store_true", help="Explicitly disable SNN Spike Activation Gating")
     parser.add_argument("--spike-th", type=float, default=0.04, help="LIF Spike threshold (default: 0.04, yields 80%%+ sparsity)")
@@ -67,7 +76,6 @@ def main():
     parser.add_argument("--nprobe", type=int, default=4, help="Number of Voronoi clusters to probe")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Compute device")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for directory memorization")
-    parser.add_argument("--no-ui", "--headless", action="store_true", help="Do not automatically open web browser")
     args = parser.parse_args()
 
     check_and_install_dependencies()
@@ -85,6 +93,10 @@ def main():
         cmd.extend(["--save-memory", args.save_memory])
     if args.learn_dir:
         cmd.extend(["--learn-dir", args.learn_dir])
+    if args.learn_fact:
+        cmd.extend(["--learn-fact", args.learn_fact])
+    if args.learn_file:
+        cmd.extend(["--learn-file", args.learn_file])
     if args.spike:
         cmd.append("--spike")
     if args.no_spike:
@@ -108,7 +120,14 @@ def main():
     if args.batch_size != 32:
         cmd.extend(["--batch-size", str(args.batch_size)])
 
-    print(f"[*] Starting PopBrain Synaptic Server on {args.host}:{args.port}...")
+    is_learn_mode = bool(args.save_memory and (args.learn_dir or args.learn_fact or args.learn_file))
+    if is_learn_mode:
+        cmd.append("--learn-only")
+        print("[*] Running offline memory creation and indexing...")
+        ret = subprocess.call(cmd)
+        sys.exit(ret)
+
+    print(f"[*] Starting PopBrain Synaptic Server (Headless) on {args.host}:{args.port}...")
     proc = subprocess.Popen(cmd)
 
     target_url = f"http://{'127.0.0.1' if args.host == '0.0.0.0' else args.host}:{args.port}"
@@ -119,15 +138,13 @@ def main():
         try:
             with urllib.request.urlopen(f"{target_url}/health", timeout=1) as resp:
                 data = json.loads(resp.read().decode())
-                print("\n[+] PopBrain Synaptic Engine is ONLINE and READY!")
+                print("\n[+] PopBrain Synaptic Server is ONLINE and READY (Headless Mode)!")
                 print(f"    * Model: {data.get('model')}")
                 print(f"    * Synaptic Memories: {data.get('synaptic_memories')} stored associations")
                 print(f"    * SNN Spike Gating: {'ACTIVE (80%+ Sparsity)' if data.get('snn_active') else 'OFF'}")
                 print(f"    * VRAM Footprint: {data.get('vram_gb')} GB")
-                print(f"    * Interactive Web Chat: {target_url}/chat")
-                print(f"    * OpenAI API Endpoint: {target_url}/v1\n")
-                if not args.no_ui:
-                    webbrowser.open(f"{target_url}/chat")
+                print(f"    * OpenAI API Endpoint: {target_url}/v1")
+                print(f"    * Ollama API Endpoint: {target_url}\n")
                 break
         except Exception:
             pass

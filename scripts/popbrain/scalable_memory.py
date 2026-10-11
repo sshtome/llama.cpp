@@ -28,9 +28,13 @@ Key Mathematical Innovations:
 from __future__ import annotations
 
 import os
+import struct
 from typing import Optional, List, Dict, Tuple, Any
+import numpy as np
 import torch
 import torch.nn as nn
+
+POPBRAIN_MAGIC = b"POPSYN01"
 
 
 class PopBrainScale10kMemory(nn.Module):
@@ -285,39 +289,121 @@ class PopBrainScale10kMemory(nn.Module):
             return torch.zeros_like(h_last), max_sim
 
     def save_memory(self, file_path: str):
-        """Saves memory state to disk."""
+        """Saves memory state to disk (.synapse binary or .pt PyTorch format)."""
         os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
-        torch.save({
-            "memory_keys": self.memory_keys.cpu(),
-            "memory_values": self.memory_values.cpu(),
-            "cluster_centroids": self.cluster_centroids.cpu(),
-            "cluster_offsets": self.cluster_offsets.cpu(),
-            "sorted_keys": self.sorted_keys.cpu(),
-            "sorted_values": self.sorted_values.cpu(),
-            "num_memories": self.num_memories,
-            "hidden_dim": self.hidden_dim,
-            "num_clusters": self.num_clusters,
-            "nprobe": self.nprobe,
-            "inhibition_threshold": self.inhibition_threshold,
-            "margin_threshold": self.margin_threshold,
-            "modulation_strength": self.modulation_strength,
-            "ivf_built": self.ivf_built
-        }, file_path)
+        if file_path.endswith(".synapse"):
+            with open(file_path, "wb") as f:
+                f.write(POPBRAIN_MAGIC)
+                # popbrain_config: 10 fields (40 bytes)
+                cfg_bytes = struct.pack(
+                    "<iiifffifii",
+                    int(self.hidden_dim),
+                    int(self.num_clusters),
+                    int(self.nprobe),
+                    float(self.inhibition_threshold),
+                    float(self.margin_threshold),
+                    float(self.modulation_strength),
+                    1,      # enable_spike_sparsity
+                    0.04,   # spike_threshold
+                    1 if self.device.startswith("cuda") else 0,
+                    0       # device_id
+                )
+                f.write(cfg_bytes)
+                f.write(struct.pack("<ii", int(self.num_memories), 1 if self.ivf_built else 0))
+
+                if self.num_memories > 0:
+                    if self.sorted_keys.shape[0] == self.num_memories:
+                        k_tensor = self.sorted_keys
+                        v_tensor = self.sorted_values
+                    else:
+                        k_tensor = self.memory_keys
+                        v_tensor = self.memory_values
+                    f.write(k_tensor.cpu().to(dtype=torch.float32).contiguous().numpy().tobytes())
+                    f.write(v_tensor.cpu().to(dtype=torch.float32).contiguous().numpy().tobytes())
+        else:
+            torch.save({
+                "memory_keys": self.memory_keys.cpu(),
+                "memory_values": self.memory_values.cpu(),
+                "cluster_centroids": self.cluster_centroids.cpu(),
+                "cluster_offsets": self.cluster_offsets.cpu(),
+                "sorted_keys": self.sorted_keys.cpu(),
+                "sorted_values": self.sorted_values.cpu(),
+                "num_memories": self.num_memories,
+                "hidden_dim": self.hidden_dim,
+                "num_clusters": self.num_clusters,
+                "nprobe": self.nprobe,
+                "inhibition_threshold": self.inhibition_threshold,
+                "margin_threshold": self.margin_threshold,
+                "modulation_strength": self.modulation_strength,
+                "ivf_built": self.ivf_built
+            }, file_path)
 
     def load_memory(self, file_path: str):
-        """Loads memory state from disk."""
-        data = torch.load(file_path, map_location=self.device)
-        self.memory_keys = data["memory_keys"].to(device=self.device, dtype=self.dtype)
-        self.memory_values = data["memory_values"].to(device=self.device, dtype=self.dtype)
-        self.cluster_centroids = data.get("cluster_centroids", torch.empty((0, self.hidden_dim), device=self.device)).to(device=self.device, dtype=self.dtype)
-        self.cluster_offsets = data.get("cluster_offsets", torch.zeros(self.num_clusters + 1, device=self.device, dtype=torch.long)).to(self.device)
-        self.sorted_keys = data.get("sorted_keys", self.memory_keys).to(device=self.device, dtype=self.dtype)
-        self.sorted_values = data.get("sorted_values", self.memory_values).to(device=self.device, dtype=self.dtype)
-        self.num_memories = data.get("num_memories", self.memory_keys.shape[0])
-        self.ivf_built = data.get("ivf_built", False)
-        if "inhibition_threshold" in data:
-            self.inhibition_threshold = data["inhibition_threshold"]
-        if "modulation_strength" in data:
-            self.modulation_strength = data["modulation_strength"]
-        if "margin_threshold" in data:
-            self.margin_threshold = data["margin_threshold"]
+        """Loads memory state from disk (.synapse binary or .pt PyTorch format)."""
+        with open(file_path, "rb") as f:
+            header = f.read(8)
+
+        if header == POPBRAIN_MAGIC:
+            with open(file_path, "rb") as f:
+                f.seek(8)
+                cfg_raw = f.read(40)
+                (
+                    ckpt_dim,
+                    num_clusters,
+                    nprobe,
+                    inhibition_threshold,
+                    margin_threshold,
+                    modulation_strength,
+                    enable_spike,
+                    spike_th,
+                    use_cuda,
+                    device_id,
+                ) = struct.unpack("<iiifffifii", cfg_raw)
+
+                if ckpt_dim != self.hidden_dim:
+                    raise ValueError(f"Checkpoint hidden_dim ({ckpt_dim}) does not match current model hidden_dim ({self.hidden_dim})")
+
+                M, ivf_built = struct.unpack("<ii", f.read(8))
+                self.num_memories = M
+                self.num_clusters = num_clusters
+                self.nprobe = nprobe
+                self.inhibition_threshold = inhibition_threshold
+                self.margin_threshold = margin_threshold
+                self.modulation_strength = modulation_strength
+
+                if M > 0:
+                    k_bytes = f.read(M * ckpt_dim * 4)
+                    v_bytes = f.read(M * ckpt_dim * 4)
+                    k_np = np.frombuffer(k_bytes, dtype=np.float32).copy().reshape(M, ckpt_dim)
+                    v_np = np.frombuffer(v_bytes, dtype=np.float32).copy().reshape(M, ckpt_dim)
+                    self.memory_keys = torch.from_numpy(k_np).to(device=self.device, dtype=self.dtype)
+                    self.memory_values = torch.from_numpy(v_np).to(device=self.device, dtype=self.dtype)
+                    self.build_ivf_index(iterations=3)
+                else:
+                    self.memory_keys = torch.empty((0, self.hidden_dim), device=self.device, dtype=self.dtype)
+                    self.memory_values = torch.empty((0, self.hidden_dim), device=self.device, dtype=self.dtype)
+                    self.cluster_centroids = torch.empty((0, self.hidden_dim), device=self.device, dtype=self.dtype)
+                    self.cluster_offsets = torch.zeros(self.num_clusters + 1, device=self.device, dtype=torch.long)
+                    self.sorted_keys = self.memory_keys
+                    self.sorted_values = self.memory_values
+                    self.ivf_built = False
+        else:
+            data = torch.load(file_path, map_location=self.device)
+            mem_keys = data["memory_keys"]
+            ckpt_dim = data.get("hidden_dim", mem_keys.shape[-1] if mem_keys.numel() > 0 else self.hidden_dim)
+            if ckpt_dim != self.hidden_dim:
+                raise ValueError(f"Checkpoint hidden_dim ({ckpt_dim}) does not match current model hidden_dim ({self.hidden_dim})")
+            self.memory_keys = mem_keys.to(device=self.device, dtype=self.dtype)
+            self.memory_values = data["memory_values"].to(device=self.device, dtype=self.dtype)
+            self.cluster_centroids = data.get("cluster_centroids", torch.empty((0, self.hidden_dim), device=self.device)).to(device=self.device, dtype=self.dtype)
+            self.cluster_offsets = data.get("cluster_offsets", torch.zeros(self.num_clusters + 1, device=self.device, dtype=torch.long)).to(self.device)
+            self.sorted_keys = data.get("sorted_keys", self.memory_keys).to(device=self.device, dtype=self.dtype)
+            self.sorted_values = data.get("sorted_values", self.memory_values).to(device=self.device, dtype=self.dtype)
+            self.num_memories = data.get("num_memories", self.memory_keys.shape[0])
+            self.ivf_built = data.get("ivf_built", False)
+            if "inhibition_threshold" in data:
+                self.inhibition_threshold = data["inhibition_threshold"]
+            if "modulation_strength" in data:
+                self.modulation_strength = data["modulation_strength"]
+            if "margin_threshold" in data:
+                self.margin_threshold = data["margin_threshold"]

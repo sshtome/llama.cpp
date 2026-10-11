@@ -76,46 +76,76 @@ Standard Large Language Models (LLMs) suffer from fundamental engineering constr
 
 ---
 
-## One-Click Desktop & Web UI Launcher (Zero Setup)
+## Headless Synaptic Architecture (v1.4.0)
 
-The repository provides ready-to-use launch scripts for both platforms:
+Version 1.4.0 introduces an upgraded, completely headless, pure console architecture:
+- **Upgraded Neural Backbone:** `Qwen2.5-Coder-3B-Instruct` (hidden dimension $D=2048$, 3.09B parameters) provides substantially enhanced instruction-following, coding comprehension, and complex reasoning on RTX 3060 (5.75 GB VRAM footprint).
+- **Zero Web UI Overhead:** Completely eliminated all web/HTML/browser interfaces. Headless server exposes high-performance OpenAI API (`/v1`) and Ollama API endpoints for integration into external desktop clients (Cherry Studio, LM Studio, OpenWebUI) or custom pipelines.
+- **Native C++ Management CLI (`popbrain_cli`):** High-speed binary tool for inspecting `.synapse` binary structures, running microsecond latency benchmarks, and validating Voronoi cluster geometry.
+- **Two Distinct Console Modes:**
+  1. **Offline Memory Creation / Ingestion:** Memorize facts or code directories directly from terminal arguments (`--learn-fact`, `--learn-dir`, `--learn-file` + `--save-memory`). Indexes associations into a standalone `.synapse` binary and exits immediately ($0$ autograd, no server overhead).
+  2. **Headless Server Deployment:** Launch with `--memory <file.synapse>` to serve the model with in-flight synaptic modulation on OpenAI/Ollama ports.
 
-### Windows:
-Double-click:
-```bat
-run_windows.bat
-```
-*(Or execute `python scripts/run_synaptic_llm.py` in PowerShell)*
+---
 
-### Linux / macOS:
+## Native C++ CLI Tool (`popbrain_cli.exe`)
+
+The compiled C++ executable (`build/Release/popbrain_cli.exe`) interacts directly with `.synapse` (`POPSYN01`) binary checkpoints:
+
 ```bash
-chmod +x run_linux.sh
-./run_linux.sh
+# 1. Inspect binary header, Voronoi geometry, and memory count
+build\Release\popbrain_cli.exe --info assets/my_knowledge.synapse
+
+# 2. Benchmark per-token latency and lateral inhibition suppression
+build\Release\popbrain_cli.exe --benchmark assets/my_knowledge.synapse 1000
+
+# 3. Initialize an empty .synapse checkpoint with custom dimensionality
+build\Release\popbrain_cli.exe --create new_mem.synapse --dim 2048 --clusters 128
 ```
 
-**Automated Steps:**
-1. Checks and verifies necessary dependencies.
-2. Initializes the model and loads 67,000+ synaptic transitions into VRAM.
-3. Automatically launches the interactive Web Chat interface in the default browser at `http://127.0.0.1:8088/chat`.
+---
+
+## Console Workflow Guide
+
+### Workflow A: Memorizing Knowledge into a Memory File (Offline)
+
+Teach the model new facts or entire codebases purely from the console and save directly to `.synapse`:
+
+```bash
+# Memorize a single key-value fact and exit immediately:
+run_windows.bat --learn-fact "Как меня зовут?=Тебя зовут Илья." --save-memory assets/my_knowledge.synapse
+
+# Ingest an entire codebase or folder of documents:
+run_windows.bat --learn-dir D:\my_project --save-memory assets/project_knowledge.synapse --spike
+
+# Ingest a text file of QA pairs:
+run_windows.bat --learn-file facts.txt --save-memory assets/facts.synapse
+```
+
+### Workflow B: Launching Headless Server with Memory Checkpoint
+
+Run the headless server (OpenAI & Ollama APIs) pointing to your created memory file:
+
+```bash
+# Launch with custom memory checkpoint:
+run_windows.bat --memory assets/my_knowledge.synapse
+
+# Or via Python directly:
+python scripts/run_synaptic_llm.py --memory assets/my_knowledge.synapse --host 127.0.0.1 --port 8088
+```
+
+---
+
 ## Command-Line Arguments Reference
-
-All runtime options, hyperparameters, and memorization paths can be configured directly from the command line via `run_windows.bat`, `run_linux.sh`, or `python scripts/run_synaptic_llm.py`:
-
-```bash
-python scripts/run_synaptic_llm.py [OPTIONS]
-# Or using the launcher scripts:
-run_windows.bat [OPTIONS]
-./run_linux.sh [OPTIONS]
-```
-
-### Supported Arguments
 
 | Flag | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--model`, `-m` | `str` | `Qwen2.5-Coder` | Local directory or Hugging Face repository ID (e.g., `Qwen/Qwen2.5-Coder-1.5B-Instruct`, GGUF or PyTorch weights). |
-| `--learn-dir`, `-d` | `str` | `None` | Path to repository or document directory to parse and ingest into synaptic memory (0 backprop) before starting. |
-| `--memory`, `--checkpoint`, `-c` | `str` | `None` | Path to load a pre-existing `.synapse` or `.pt` memory checkpoint. |
-| `--save-memory` | `str` | `None` | Path where the resulting synaptic memory checkpoint will be saved after ingestion or session. |
+| `--model`, `-m` | `str` | `Qwen2.5-Coder-3B-Instruct` | Local directory or Hugging Face repository ID (PyTorch or GGUF weights). |
+| `--memory`, `--checkpoint`, `-c` | `str` | `None` | Path to load a `.synapse` binary memory checkpoint on startup. |
+| `--save-memory` | `str` | `None` | Path where the resulting `.synapse` memory checkpoint will be saved. |
+| `--learn-fact` | `str` | `None` | Ingest single fact from CLI (format: `'Question=Answer'`). If `--save-memory` is provided, exits after saving. |
+| `--learn-dir`, `-d` | `str` | `None` | Path to folder/codebase to ingest into synaptic memory (0 backprop). Exits after saving if `--save-memory` provided. |
+| `--learn-file` | `str` | `None` | Path to text file with facts to ingest. |
 | `--spike`, `-s` | `flag` | `False` | Enable SNN Event-Driven Spike Activation Gating ($|h| < V_{\text{th}} \to 0$) for 80%+ structural sparsity. |
 | `--no-spike` | `flag` | `False` | Explicitly disable SNN Spike Activation Gating. |
 | `--spike-th` | `float` | `0.04` | LIF Spike activation threshold $V_{\text{th}}$. Suppresses sub-threshold floating-point noise. |
@@ -125,71 +155,39 @@ run_windows.bat [OPTIONS]
 | `--repetition-penalty`, `--rep-penalty` | `float` | `1.15` | Repetition penalty factor to prevent degenerate cyclic token looping. |
 | `--clusters` | `int` | `128` | Number of Spherical Voronoi cortical partitions (IVF clusters) on unit hypersphere $\mathbb{S}^{D-1}$. |
 | `--nprobe` | `int` | `4` | Number of Voronoi cortical cells probed per token query. |
-| `--port`, `-p` | `int` | `8088` | TCP port for OpenAI-compatible API and Web Chat UI. |
+| `--port`, `-p` | `int` | `8088` | TCP port for OpenAI-compatible API and Ollama API. |
 | `--host` | `str` | `127.0.0.1` | Network interface to bind server to (`127.0.0.1` or `0.0.0.0` for LAN). |
 | `--device` | `str` | `auto` | Execution device (`cuda`, `cpu`, or `auto`). |
 | `--batch-size` | `int` | `32` | Batch size of documents encoded concurrently during ingestion. |
-| `--no-ui`, `--headless` | `flag` | `False` | Headless server mode; prevents automatic opening of web browser. |
-
-### Practical CLI Examples
-
-#### 1. Memorize a Code Repository with SNN Spike Gating
-Scan and ingest a local project into memory on-the-fly and save the checkpoint to disk:
-```bash
-# Windows
-run_windows.bat --learn-dir D:\my_project --save-memory my_project.synapse --spike
-
-# Linux
-./run_linux.sh --learn-dir /home/user/my_project --save-memory my_project.synapse --spike
-```
-
-#### 2. Load an Existing Knowledge Base on a Custom Model
-Load a pre-compiled knowledge base and run on a specific model:
-```bash
-python scripts/run_synaptic_llm.py \
-    --model Qwen/Qwen2.5-Coder-1.5B-Instruct \
-    --memory my_project.synapse \
-    --spike \
-    --spike-th 0.04
-```
-
-#### 3. Headless OpenAI API Server for LM Studio or Cherry Studio on LAN
-Run as an OpenAI-compatible API backend listening on all network interfaces:
-```bash
-python scripts/run_synaptic_llm.py \
-    --host 0.0.0.0 \
-    --port 8088 \
-    --memory my_project.synapse \
-    --spike \
-    --no-ui
-```
 
 ---
 
 ## Integration with LM Studio / Cherry Studio
 
+### Connecting to Cherry Studio (Ollama or OpenAI API):
+1. Launch the server:
+   ```bash
+   run_windows.bat --memory assets/my_knowledge.synapse
+   ```
+2. In Cherry Studio Settings -> **Model Providers**:
+   - **Ollama Provider**: set URL to `http://127.0.0.1:8088`. Click "Check" / "Manage Models" to automatically fetch models.
+   - **OpenAI Provider**: set Base URL to `http://127.0.0.1:8088/v1`, API Key can be any dummy string (e.g. `sk-popbrain`).
+3. Select model `qwen2.5-coder:3b` or `popbrain-synaptic-llm`.
+
 ### Connecting to LM Studio:
-1. Launch the server using `run_windows.bat` or `./run_linux.sh`.
-2. Open LM Studio:
+1. Launch the server using `run_windows.bat --memory assets/my_knowledge.synapse`.
+2. In LM Studio:
    - Go to **Developer / My Models / External Providers**.
    - Add endpoint: `http://127.0.0.1:8088/v1` with Model Name `qwen2.5-coder-popbrain`.
    - Open Chat and select `qwen2.5-coder-popbrain`.
-3. The model will respond with real-time synaptic modulation without expanding context window length.
 
-### Connecting to Cherry Studio (Ollama or OpenAI API):
-1. In Cherry Studio Settings -> **Model Providers**:
-   - **Ollama Provider**: set URL to `http://127.0.0.1:8088`. Click "Check" / "Manage Models" to automatically fetch models.
-   - **OpenAI Provider**: set Base URL to `http://127.0.0.1:8088/v1`, API Key can be any dummy string (e.g. `sk-popbrain`).
-2. Select model `qwen2.5-coder:1.5b` or `popbrain-synaptic-llm`.
-
-### Instant Fact Learning API (Zero-Backprop Online Learning):
-Teach the model new facts in real time without retraining or restarting:
+### Online Zero-Backprop Fact Learning via API:
+Teach the running model new facts in real time without restarting:
 ```bash
 curl -X POST http://127.0.0.1:8088/v1/memory/learn \
   -H "Content-Type: application/json" \
   -d '{"question": "Как меня зовут?", "answer": "Тебя зовут Илья."}'
 ```
-Or directly via the **Memorize Single Fact** panel in the Web UI (`http://127.0.0.1:8088/chat`).
 
 ### C++ Shared Library Integration in `llama_decode()`
 To embed directly into custom forks of `llama.cpp` or `llama-server`:

@@ -38,8 +38,14 @@ if (POPBRAIN_BUILD_TESTS)
     add_test(NAME SynapticMemoryCoreTest COMMAND test_popbrain_synapse)
 endif()
 
+# Native PopBrain CLI Management Executable
+add_executable(popbrain_cli
+    src/popbrain_cli.cpp
+)
+target_link_libraries(popbrain_cli PRIVATE popbrain_synapse)
+
 # Installation Targets
-install(TARGETS popbrain_synapse
+install(TARGETS popbrain_synapse popbrain_cli
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
     RUNTIME DESTINATION bin

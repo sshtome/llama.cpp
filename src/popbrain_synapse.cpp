@@ -464,6 +464,10 @@ POPBRAIN_API int32_t popbrain_get_memory_count(const popbrain_synapse_context* c
     return ctx ? ctx->num_memories : 0;
 }
 
+POPBRAIN_API int32_t popbrain_get_hidden_dim(const popbrain_synapse_context* ctx) {
+    return ctx ? ctx->config.hidden_dim : 0;
+}
+
 POPBRAIN_API void popbrain_free(popbrain_synapse_context* ctx) {
     if (!ctx) return;
 #if defined(POPBRAIN_USE_CUDA)

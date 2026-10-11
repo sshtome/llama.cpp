@@ -110,6 +110,11 @@ POPBRAIN_API int32_t popbrain_load_checkpoint(
 POPBRAIN_API int32_t popbrain_get_memory_count(const popbrain_synapse_context* ctx);
 
 /**
+ * Returns hidden dimensionality of the synaptic memory context.
+ */
+POPBRAIN_API int32_t popbrain_get_hidden_dim(const popbrain_synapse_context* ctx);
+
+/**
  * Frees synaptic memory context.
  */
 POPBRAIN_API void popbrain_free(popbrain_synapse_context* ctx);
