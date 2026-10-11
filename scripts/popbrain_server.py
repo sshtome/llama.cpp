@@ -41,16 +41,24 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 default_cache_dir = r"C:\Users\ilya\.cache\huggingface\hub\models--Qwen--Qwen2.5-Coder-1.5B-Instruct\snapshots\2e1fd397ee46e1388853d2af2c993145b0f1098a"
 default_model_path = default_cache_dir if os.path.exists(default_cache_dir) else "Qwen/Qwen2.5-Coder-1.5B-Instruct"
 
-default_checkpoint = os.path.join(os.path.dirname(scripts_dir), "assets", "popbrain_qwen_synaptic_memory.pt")
-if not os.path.exists(default_checkpoint):
-    default_checkpoint = None
+candidate_checkpoints = [
+    os.path.join(os.path.dirname(scripts_dir), "assets", "popbrain_qwen_synaptic_memory.pt"),
+    r"D:\projects\popbrain\assets\popbrain_qwen_synaptic_memory.pt",
+    os.path.join(scripts_dir, "popbrain_qwen_synaptic_memory.pt"),
+    "memory.synapse"
+]
+default_checkpoint = None
+for cp in candidate_checkpoints:
+    if os.path.exists(cp):
+        default_checkpoint = cp
+        break
 
 tokenizer = None
 model = None
 memory: Optional[PopBrainScale10kMemory] = None
 snn_enabled: bool = False
 snn_threshold: float = 0.04
-current_model_name: str = "Qwen2.5-Coder-1.5B"
+current_model_name: str = "Qwen2.5-Coder-1.5B-Instruct"
 saved_checkpoint_path: Optional[str] = None
 
 
@@ -102,7 +110,19 @@ def init_runtime(
         model.to(device)
 
     hidden_dim = model.config.hidden_size
-    current_model_name = os.path.basename(model_path.rstrip("\\/"))
+    name_candidate = getattr(model.config, "_name_or_path", "")
+    if "Qwen" in model_path or "qwen" in model_path or "Qwen" in str(name_candidate):
+        current_model_name = "Qwen2.5-Coder-1.5B-Instruct"
+    elif name_candidate and not ("snapshots" in name_candidate or len(name_candidate) > 40):
+        current_model_name = os.path.basename(name_candidate.rstrip("\\/"))
+    else:
+        parts = model_path.replace("\\", "/").split("/")
+        clean_name = None
+        for p in parts:
+            if p.startswith("models--"):
+                clean_name = p.replace("models--", "").replace("--", "/")
+                break
+        current_model_name = clean_name if clean_name else os.path.basename(model_path.rstrip("\\/"))
 
     print(f"[*] Initializing PopBrain Synaptic Memory (dim={hidden_dim}, clusters={num_clusters}, nprobe={nprobe}, alpha={modulation_strength})...")
     memory = PopBrainScale10kMemory(
@@ -200,6 +220,50 @@ class SaveMemoryRequest(BaseModel):
 
 class LoadMemoryRequest(BaseModel):
     file_path: str
+
+
+@app.get("/v1/models")
+@app.get("/models")
+def list_models():
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": current_model_name,
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "popbrain",
+                "root": current_model_name,
+                "parent": None,
+                "permission": [{
+                    "id": f"modelperm-{current_model_name}",
+                    "object": "model_permission",
+                    "created": int(time.time()),
+                    "allow_create_engine": False,
+                    "allow_sampling": True,
+                    "allow_logprobs": True,
+                    "allow_search_indices": False,
+                    "allow_view": True,
+                    "allow_fine_tuning": False,
+                    "organization": "*",
+                    "group": None,
+                    "is_blocking": False
+                }]
+            },
+            {
+                "id": "popbrain-synaptic-llm",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "popbrain"
+            },
+            {
+                "id": "qwen2.5-coder-popbrain",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "popbrain"
+            }
+        ]
+    }
 
 
 @app.get("/health")
