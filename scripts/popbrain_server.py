@@ -1,11 +1,12 @@
 """
-PopBrain Synaptic Server with Built-in Web UI, SNN Spike Gating & Memory Manager
-================================================================================
-Provides:
-1. Standard OpenAI API (/v1/chat/completions) with live synaptic modulation.
-2. Built-in interactive Web Chat UI (/chat) with Directory Memorization & Checkpoint Manager.
-3. SNN Event-Driven Spike Activation Gating for memory reduction.
-4. Support for arbitrary models and arbitrary .synapse memory files via CLI arguments.
+PopBrain Synaptic Server with Built-in Web UI, SNN Spike Gating & Multi-Provider API
+====================================================================================
+Supported Protocols:
+1. OpenAI API (/v1/chat/completions, /v1/models) with streaming (SSE) and live synaptic modulation.
+2. Ollama API (/api/tags, /api/version, /api/chat, /api/generate) for Cherry Studio, OpenWebUI.
+3. Built-in interactive Web Chat UI (/ and /chat) with live stats, directory ingestion, and memory checkpoints.
+4. SNN Event-Driven Spike Activation Gating for memory/compute reduction.
+5. Full CORS support for Electron clients (Cherry Studio, LM Studio) and web apps.
 """
 
 import os
@@ -13,11 +14,13 @@ import sys
 import argparse
 import time
 import json
-from typing import List, Dict, Optional, Any
+from datetime import datetime
+from typing import List, Dict, Optional, Any, Generator
 
 import torch
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -34,7 +37,16 @@ except ImportError:
 
 from ingest_knowledge import scan_directory_for_knowledge
 
-app = FastAPI(title="PopBrain Synaptic LLM Server", version="1.3.0")
+app = FastAPI(title="PopBrain Synaptic LLM Server", version="1.3.4")
+
+# Enable CORS for Cherry Studio, LM Studio, OpenWebUI, and browser clients
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Runtime state
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -59,6 +71,7 @@ memory: Optional[PopBrainScale10kMemory] = None
 snn_enabled: bool = False
 snn_threshold: float = 0.04
 current_model_name: str = "Qwen2.5-Coder-1.5B-Instruct"
+default_rep_penalty: float = 1.15
 saved_checkpoint_path: Optional[str] = None
 
 
@@ -88,7 +101,6 @@ def init_runtime(
     snn_threshold = spike_th
     saved_checkpoint_path = save_memory_path
 
-    # Verify model path fallback
     if not os.path.exists(model_path) and ("/" in model_path or "\\" in model_path):
         if not os.path.exists(model_path):
             print(f"[!] Specified local model path '{model_path}' not found.")
@@ -122,7 +134,7 @@ def init_runtime(
             if p.startswith("models--"):
                 clean_name = p.replace("models--", "").replace("--", "/")
                 break
-        current_model_name = clean_name if clean_name else os.path.basename(model_path.rstrip("\\/"))
+        current_model_name = clean_name if clean_name else "Qwen2.5-Coder-1.5B-Instruct"
 
     print(f"[*] Initializing PopBrain Synaptic Memory (dim={hidden_dim}, clusters={num_clusters}, nprobe={nprobe}, alpha={modulation_strength})...")
     memory = PopBrainScale10kMemory(
@@ -193,20 +205,44 @@ def ingest_folder(folder_path: str, batch_size: int = 32) -> int:
     return len(items)
 
 
+# Data Models
 class ChatMessage(BaseModel):
     role: str
     content: str
 
 
-default_rep_penalty: float = 1.15
-
 class ChatCompletionRequest(BaseModel):
-    model: str = "popbrain-synaptic-llm"
+    model: Optional[str] = "popbrain-synaptic-llm"
     messages: List[ChatMessage]
     max_tokens: Optional[int] = 512
     temperature: Optional[float] = 0.0
     repetition_penalty: Optional[float] = None
     synaptic_modulation: Optional[bool] = True
+    stream: Optional[bool] = False
+
+
+class OllamaChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class OllamaChatRequest(BaseModel):
+    model: Optional[str] = "qwen2.5-coder:1.5b"
+    messages: List[OllamaChatMessage]
+    stream: Optional[bool] = False
+    options: Optional[Dict[str, Any]] = None
+
+
+class OllamaGenerateRequest(BaseModel):
+    model: Optional[str] = "qwen2.5-coder:1.5b"
+    prompt: str
+    stream: Optional[bool] = False
+    options: Optional[Dict[str, Any]] = None
+
+
+class OllamaShowRequest(BaseModel):
+    name: Optional[str] = None
+    model: Optional[str] = None
 
 
 class IngestRequest(BaseModel):
@@ -222,9 +258,313 @@ class LoadMemoryRequest(BaseModel):
     file_path: str
 
 
+def run_generation_stream(
+    messages: List[Dict[str, str]],
+    max_tokens: int = 512,
+    temperature: float = 0.0,
+    rep_pen: float = 1.15,
+    synaptic_modulation: bool = True
+) -> Generator[Dict[str, Any], None, None]:
+    """
+    Core token-by-token generation engine.
+    Yields dicts with 'token_text', 'done', 'synaptic_diagnostics'.
+    """
+    global model, tokenizer, memory, snn_enabled, snn_threshold
+
+    try:
+        if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
+            prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        else:
+            prompt = ""
+            for msg in messages:
+                prompt += f"<|im_start|>{msg.get('role', 'user')}\n{msg.get('content', '')}<|im_end|>\n"
+            prompt += "<|im_start|>assistant\n"
+    except Exception:
+        prompt = ""
+        for msg in messages:
+            prompt += f"<|im_start|>{msg.get('role', 'user')}\n{msg.get('content', '')}<|im_end|>\n"
+        prompt += "<|im_start|>assistant\n"
+
+    enc = tokenizer(prompt, return_tensors="pt").to(device)
+    initial_len = enc.input_ids.shape[1]
+
+    stop_token_ids = set()
+    if tokenizer.eos_token_id is not None:
+        stop_token_ids.add(tokenizer.eos_token_id)
+    if tokenizer.pad_token_id is not None:
+        stop_token_ids.add(tokenizer.pad_token_id)
+    for stop_str in ["<|im_end|>", "<|endoftext|>", "</s>", "<|eot_id|>", "<eos>"]:
+        tid = tokenizer.convert_tokens_to_ids(stop_str)
+        if tid is not None and tid != tokenizer.unk_token_id:
+            stop_token_ids.add(tid)
+
+    gen_tokens = []
+    accum_decoded = ""
+    fired_steps = 0
+    max_similarity = 0.0
+    last_sparsity = 0.0
+    t0 = time.time()
+    past_kv = None
+    curr_input = enc.input_ids
+
+    with torch.no_grad():
+        for step in range(max_tokens or 512):
+            out = model(curr_input, past_key_values=past_kv, use_cache=True, output_hidden_states=True)
+            past_kv = out.past_key_values
+            last_hidden = out.hidden_states[-1][0, -1, :].clone()
+
+            # 1. SNN Spike Gating
+            if snn_enabled:
+                mask = torch.abs(last_hidden) >= snn_threshold
+                zeros = (~mask).sum().item()
+                last_sparsity = zeros / last_hidden.numel()
+                last_hidden = last_hidden * mask
+
+            # 2. Synaptic Modulation
+            if synaptic_modulation and memory and memory.num_memories > 0:
+                delta_h, sim = memory.compute_synaptic_modulation(last_hidden)
+                if sim > max_similarity:
+                    max_similarity = sim
+                if torch.norm(delta_h) > 1e-5:
+                    fired_steps += 1
+                    mod_hidden = (last_hidden + delta_h).unsqueeze(0).unsqueeze(0)
+                    logits = model.lm_head(mod_hidden)[0, 0, :]
+                else:
+                    logits = out.logits[0, -1, :]
+            else:
+                logits = out.logits[0, -1, :]
+
+            # 3. Repetition Penalty
+            if rep_pen and rep_pen != 1.0 and len(gen_tokens) > 0:
+                for token_id in set(gen_tokens):
+                    if logits[token_id] < 0:
+                        logits[token_id] *= rep_pen
+                    else:
+                        logits[token_id] /= rep_pen
+
+            # 4. Sampling / Greedy
+            if temperature and temperature > 0.0:
+                probs = torch.softmax(logits / temperature, dim=-1)
+                next_tok = torch.multinomial(probs, num_samples=1)
+            else:
+                next_tok = torch.argmax(logits).unsqueeze(0)
+
+            tok_id = next_tok.item()
+            if tok_id in stop_token_ids:
+                break
+
+            gen_tokens.append(tok_id)
+            new_decoded = tokenizer.decode(gen_tokens, skip_special_tokens=True)
+            delta_chunk = new_decoded[len(accum_decoded):]
+            accum_decoded = new_decoded
+
+            yield {
+                "token_text": delta_chunk,
+                "done": False,
+                "token_id": tok_id,
+                "prompt_tokens": initial_len,
+                "gen_count": len(gen_tokens)
+            }
+            curr_input = next_tok.unsqueeze(0)
+
+    dt = time.time() - t0
+    diag = {
+        "synaptic_active": synaptic_modulation,
+        "fired_steps": fired_steps,
+        "max_cosine_similarity": round(max_similarity, 4),
+        "sparsity_ratio": round(last_sparsity, 4),
+        "generation_time_sec": round(dt, 3),
+        "tokens_per_sec": round(len(gen_tokens) / max(0.001, dt), 2),
+        "prompt_tokens": initial_len,
+        "completion_tokens": len(gen_tokens),
+        "total_tokens": initial_len + len(gen_tokens)
+    }
+    yield {
+        "token_text": "",
+        "done": True,
+        "full_text": accum_decoded,
+        "diagnostics": diag
+    }
+
+
+# =========================================================================
+# OLLAMA API ENDPOINTS (For Cherry Studio, OpenWebUI, and Ollama clients)
+# =========================================================================
+
+@app.get("/api/tags")
+def ollama_tags():
+    """Ollama-compatible model list requested by Cherry Studio."""
+    models_list = [
+        {
+            "name": current_model_name,
+            "model": current_model_name,
+            "modified_at": datetime.utcnow().isoformat() + "Z",
+            "size": 3200000000,
+            "digest": "popbrain-qwen-1.5b",
+            "details": {
+                "parent_model": "",
+                "format": "gguf",
+                "family": "qwen2",
+                "families": ["qwen2"],
+                "parameter_size": "1.5B",
+                "quantization_level": "bfloat16"
+            }
+        },
+        {
+            "name": "qwen2.5-coder:1.5b",
+            "model": "qwen2.5-coder:1.5b",
+            "modified_at": datetime.utcnow().isoformat() + "Z",
+            "size": 3200000000,
+            "digest": "popbrain-qwen-1.5b",
+            "details": {
+                "parent_model": "",
+                "format": "gguf",
+                "family": "qwen2",
+                "families": ["qwen2"],
+                "parameter_size": "1.5B",
+                "quantization_level": "bfloat16"
+            }
+        },
+        {
+            "name": "popbrain-synaptic-llm",
+            "model": "popbrain-synaptic-llm",
+            "modified_at": datetime.utcnow().isoformat() + "Z",
+            "size": 3200000000,
+            "digest": "popbrain",
+            "details": {
+                "parent_model": "",
+                "format": "gguf",
+                "family": "qwen2",
+                "families": ["qwen2"],
+                "parameter_size": "1.5B",
+                "quantization_level": "bfloat16"
+            }
+        }
+    ]
+    return {"models": models_list}
+
+
+@app.get("/api/version")
+def ollama_version():
+    return {"version": "0.3.14"}
+
+
+@app.post("/api/show")
+def ollama_show(req: OllamaShowRequest):
+    return {
+        "modelfile": "# PopBrain Synaptic LLM\nFROM qwen2.5-coder:1.5b",
+        "parameters": "temperature 0.0\nstop <|im_end|>",
+        "template": "<|im_start|>system\n{{ .System }}<|im_end|>\n<|im_start|>user\n{{ .Prompt }}<|im_end|>\n<|im_start|>assistant\n",
+        "details": {
+            "format": "gguf",
+            "family": "qwen2",
+            "parameter_size": "1.5B",
+            "quantization_level": "bfloat16"
+        }
+    }
+
+
+@app.post("/api/chat")
+def ollama_chat(req: OllamaChatRequest):
+    """Ollama /api/chat implementation supporting both streaming and non-streaming."""
+    msgs = [{"role": m.role, "content": m.content} for m in req.messages]
+    opts = req.options or {}
+    temperature = float(opts.get("temperature", 0.0))
+    rep_pen = float(opts.get("repeat_penalty", default_rep_penalty))
+
+    if req.stream:
+        def stream_generator():
+            for item in run_generation_stream(msgs, temperature=temperature, rep_pen=rep_pen):
+                if not item["done"]:
+                    chunk = {
+                        "model": req.model or current_model_name,
+                        "created_at": datetime.utcnow().isoformat() + "Z",
+                        "message": {"role": "assistant", "content": item["token_text"]},
+                        "done": False
+                    }
+                    yield json.dumps(chunk, ensure_ascii=False) + "\n"
+                else:
+                    final_chunk = {
+                        "model": req.model or current_model_name,
+                        "created_at": datetime.utcnow().isoformat() + "Z",
+                        "message": {"role": "assistant", "content": ""},
+                        "done": True,
+                        "total_duration": int(item["diagnostics"]["generation_time_sec"] * 1e9),
+                        "eval_count": item["diagnostics"]["completion_tokens"]
+                    }
+                    yield json.dumps(final_chunk, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
+    else:
+        full_text = ""
+        last_diag = {}
+        for item in run_generation_stream(msgs, temperature=temperature, rep_pen=rep_pen):
+            if item["done"]:
+                full_text = item["full_text"]
+                last_diag = item["diagnostics"]
+        return {
+            "model": req.model or current_model_name,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "message": {
+                "role": "assistant",
+                "content": full_text
+            },
+            "done": True,
+            "total_duration": int(last_diag.get("generation_time_sec", 0) * 1e9),
+            "eval_count": last_diag.get("completion_tokens", 0)
+        }
+
+
+@app.post("/api/generate")
+def ollama_generate(req: OllamaGenerateRequest):
+    """Ollama /api/generate implementation."""
+    msgs = [{"role": "user", "content": req.prompt}]
+    opts = req.options or {}
+    temperature = float(opts.get("temperature", 0.0))
+    rep_pen = float(opts.get("repeat_penalty", default_rep_penalty))
+
+    if req.stream:
+        def stream_generator():
+            for item in run_generation_stream(msgs, temperature=temperature, rep_pen=rep_pen):
+                if not item["done"]:
+                    chunk = {
+                        "model": req.model or current_model_name,
+                        "created_at": datetime.utcnow().isoformat() + "Z",
+                        "response": item["token_text"],
+                        "done": False
+                    }
+                    yield json.dumps(chunk, ensure_ascii=False) + "\n"
+                else:
+                    final_chunk = {
+                        "model": req.model or current_model_name,
+                        "created_at": datetime.utcnow().isoformat() + "Z",
+                        "response": "",
+                        "done": True
+                    }
+                    yield json.dumps(final_chunk, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
+    else:
+        full_text = ""
+        for item in run_generation_stream(msgs, temperature=temperature, rep_pen=rep_pen):
+            if item["done"]:
+                full_text = item["full_text"]
+        return {
+            "model": req.model or current_model_name,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "response": full_text,
+            "done": True
+        }
+
+
+# =========================================================================
+# OPENAI API ENDPOINTS (/v1/models, /v1/chat/completions)
+# =========================================================================
+
 @app.get("/v1/models")
 @app.get("/models")
 def list_models():
+    """Standard OpenAI model enumeration."""
     return {
         "object": "list",
         "data": [
@@ -251,6 +591,12 @@ def list_models():
                 }]
             },
             {
+                "id": "qwen2.5-coder:1.5b",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "popbrain"
+            },
+            {
                 "id": "popbrain-synaptic-llm",
                 "object": "model",
                 "created": int(time.time()),
@@ -265,6 +611,86 @@ def list_models():
         ]
     }
 
+
+@app.post("/v1/chat/completions")
+def chat_completions(req: ChatCompletionRequest):
+    """OpenAI chat completions supporting both streaming SSE and JSON."""
+    msgs = [{"role": msg.role, "content": msg.content} for msg in req.messages]
+    rep_pen = req.repetition_penalty if req.repetition_penalty is not None else default_rep_penalty
+    temp = req.temperature if req.temperature is not None else 0.0
+    syn_mod = req.synaptic_modulation if req.synaptic_modulation is not None else True
+    req_id = f"chatcmpl-{int(time.time()*1000)}"
+
+    if req.stream:
+        def sse_generator():
+            for item in run_generation_stream(msgs, max_tokens=req.max_tokens or 512, temperature=temp, rep_pen=rep_pen, synaptic_modulation=syn_mod):
+                if not item["done"]:
+                    chunk = {
+                        "id": req_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": req.model or current_model_name,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": item["token_text"]},
+                            "finish_reason": None
+                        }]
+                    }
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                else:
+                    final_chunk = {
+                        "id": req_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": req.model or current_model_name,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {
+                            "prompt_tokens": item["diagnostics"]["prompt_tokens"],
+                            "completion_tokens": item["diagnostics"]["completion_tokens"],
+                            "total_tokens": item["diagnostics"]["total_tokens"]
+                        }
+                    }
+                    yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+
+        return StreamingResponse(sse_generator(), media_type="text/event-stream")
+    else:
+        full_text = ""
+        last_diag = {}
+        for item in run_generation_stream(msgs, max_tokens=req.max_tokens or 512, temperature=temp, rep_pen=rep_pen, synaptic_modulation=syn_mod):
+            if item["done"]:
+                full_text = item["full_text"]
+                last_diag = item["diagnostics"]
+
+        return {
+            "id": req_id,
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": req.model or current_model_name,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": full_text
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": last_diag.get("prompt_tokens", 0),
+                "completion_tokens": last_diag.get("completion_tokens", 0),
+                "total_tokens": last_diag.get("total_tokens", 0)
+            },
+            "synaptic_diagnostics": last_diag
+        }
+
+
+# =========================================================================
+# MANAGEMENT & HEALTH ENDPOINTS
+# =========================================================================
 
 @app.get("/health")
 def health():
@@ -328,6 +754,11 @@ def api_clear_memory():
     return {"status": "success", "total_associations": 0}
 
 
+# =========================================================================
+# WEB CHAT INTERFACE (Served on both / and /chat)
+# =========================================================================
+
+@app.get("/", response_class=HTMLResponse)
 @app.get("/chat", response_class=HTMLResponse)
 def chat_ui():
     html_content = """
@@ -336,15 +767,16 @@ def chat_ui():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>PopBrain Synaptic llama.cpp Web UI</title>
+        <title>PopBrain Synaptic LLM Web UI</title>
         <style>
             :root {
-                --bg: #0f172a;
-                --panel: #1e293b;
+                --bg: #0b0f19;
+                --panel: #131b2e;
                 --accent: #38bdf8;
                 --synapse: #10b981;
                 --text: #f8fafc;
                 --muted: #94a3b8;
+                --border: #1e293b;
             }
             body {
                 margin: 0;
@@ -357,7 +789,7 @@ def chat_ui():
             .sidebar {
                 width: 360px;
                 background: var(--panel);
-                border-right: 1px solid #334155;
+                border-right: 1px solid var(--border);
                 padding: 20px;
                 box-sizing: border-box;
                 display: flex;
@@ -365,80 +797,132 @@ def chat_ui():
                 gap: 14px;
                 overflow-y: auto;
             }
-            .title {
-                font-size: 18px;
-                font-weight: bold;
-                color: var(--accent);
+            .brand {
                 display: flex;
                 align-items: center;
-                gap: 8px;
+                gap: 10px;
+            }
+            .brand-title {
+                font-size: 18px;
+                font-weight: 700;
+                color: var(--accent);
+                letter-spacing: -0.3px;
+            }
+            .badge-online {
+                background: rgba(16, 185, 129, 0.2);
+                color: #34d399;
+                border: 1px solid rgba(16, 185, 129, 0.4);
+                font-size: 11px;
+                padding: 2px 8px;
+                border-radius: 999px;
+                font-weight: 600;
             }
             .stat-box {
-                background: #0f172a;
-                padding: 10px 12px;
+                background: #0b0f19;
+                padding: 12px;
                 border-radius: 8px;
-                border: 1px solid #334155;
-                font-size: 13px;
+                border: 1px solid var(--border);
+                font-size: 12px;
+            }
+            .stat-title {
+                color: var(--muted);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                font-size: 11px;
             }
             .stat-val {
                 font-size: 16px;
                 font-weight: bold;
                 color: var(--synapse);
-                margin-top: 3px;
+                margin-top: 4px;
             }
             .panel-header {
-                font-size: 12px;
+                font-size: 11px;
                 font-weight: bold;
                 color: var(--muted);
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
+                margin-top: 6px;
             }
             .tool-box {
-                background: #0f172a;
+                background: #0b0f19;
                 padding: 12px;
                 border-radius: 8px;
-                border: 1px solid #334155;
+                border: 1px solid var(--border);
                 display: flex;
                 flex-direction: column;
                 gap: 8px;
             }
             .tool-box input {
-                background: #1e293b;
-                border: 1px solid #334155;
+                background: #1a233a;
+                border: 1px solid var(--border);
                 color: var(--text);
-                padding: 8px;
-                border-radius: 4px;
+                padding: 8px 10px;
+                border-radius: 6px;
                 font-size: 12px;
+                outline: none;
             }
             .action-btn {
                 background: var(--synapse);
-                color: #0f172a;
+                color: #0b0f19;
                 border: none;
                 padding: 8px;
-                border-radius: 4px;
+                border-radius: 6px;
                 font-weight: bold;
+                font-size: 12px;
                 cursor: pointer;
             }
+            .action-btn:hover { opacity: 0.9; }
             .sec-btn {
-                background: #334155;
+                background: #1e293b;
                 color: var(--text);
-                border: none;
-                padding: 8px;
-                border-radius: 4px;
-                font-weight: bold;
+                border: 1px solid #334155;
+                padding: 6px 12px;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 600;
                 cursor: pointer;
             }
-            .sec-btn:hover { background: #475569; }
+            .sec-btn:hover { background: #334155; }
             .main {
                 flex: 1;
                 display: flex;
                 flex-direction: column;
                 height: 100vh;
             }
+            .top-bar {
+                padding: 14px 24px;
+                background: var(--panel);
+                border-bottom: 1px solid var(--border);
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+            }
+            .chips-bar {
+                display: flex;
+                gap: 8px;
+                flex-wrap: wrap;
+                padding: 10px 24px;
+                background: rgba(19, 27, 46, 0.6);
+                border-bottom: 1px solid var(--border);
+            }
+            .chip {
+                background: #1e293b;
+                border: 1px solid #334155;
+                color: var(--accent);
+                padding: 4px 10px;
+                border-radius: 999px;
+                font-size: 12px;
+                cursor: pointer;
+                transition: background 0.15s;
+            }
+            .chip:hover {
+                background: #334155;
+            }
             .messages {
                 flex: 1;
                 overflow-y: auto;
-                padding: 30px;
+                padding: 24px;
                 display: flex;
                 flex-direction: column;
                 gap: 16px;
@@ -447,16 +931,17 @@ def chat_ui():
                 max-width: 80%;
                 padding: 14px 18px;
                 border-radius: 12px;
-                line-height: 1.5;
+                line-height: 1.6;
                 white-space: pre-wrap;
+                font-size: 14px;
             }
             .msg.user {
                 background: #0284c7;
                 align-self: flex-end;
             }
             .msg.assistant {
-                background: #1e293b;
-                border: 1px solid #334155;
+                background: #131b2e;
+                border: 1px solid var(--border);
                 align-self: flex-start;
             }
             .synapse-hud {
@@ -467,73 +952,77 @@ def chat_ui():
                 padding: 2px 8px;
                 border-radius: 4px;
                 font-size: 11px;
-                margin-bottom: 6px;
+                margin-bottom: 8px;
             }
             .input-bar {
-                padding: 20px;
+                padding: 16px 24px;
                 background: var(--panel);
-                border-top: 1px solid #334155;
+                border-top: 1px solid var(--border);
                 display: flex;
-                gap: 12px;
+                gap: 10px;
             }
-            input[type="text"] {
+            input[type="text"]#userInput {
                 flex: 1;
-                background: #0f172a;
-                border: 1px solid #334155;
+                background: #0b0f19;
+                border: 1px solid var(--border);
                 border-radius: 8px;
-                padding: 14px;
+                padding: 12px 16px;
                 color: var(--text);
-                font-size: 15px;
+                font-size: 14px;
                 outline: none;
             }
             .send-btn {
                 background: var(--accent);
-                color: #0f172a;
+                color: #0b0f19;
                 border: none;
                 border-radius: 8px;
-                padding: 0 24px;
+                padding: 0 20px;
                 font-weight: bold;
-                font-size: 15px;
+                font-size: 14px;
                 cursor: pointer;
             }
+            .send-btn:hover { opacity: 0.9; }
         </style>
     </head>
     <body>
         <div class="sidebar">
-            <div class="title">PopBrain Synaptic LLM</div>
+            <div class="brand">
+                <span class="brand-title">PopBrain Synaptic LLM</span>
+                <span class="badge-online" id="status-pill">ONLINE</span>
+            </div>
             
             <div class="stat-box">
-                <div>Active Model</div>
-                <div class="stat-val" id="model-val">Loading...</div>
+                <div class="stat-title">Active Model</div>
+                <div class="stat-val" id="model-val" style="color: var(--accent);">Loading...</div>
             </div>
 
             <div class="stat-box">
-                <div>Synaptic Memory Load</div>
+                <div class="stat-title">Synaptic Memory Index</div>
                 <div class="stat-val" id="mem-count">0 transitions</div>
                 <div style="color: var(--muted); font-size: 11px; margin-top: 4px;">Spherical Voronoi IVF Routing</div>
             </div>
 
             <div class="stat-box">
-                <div>SNN Activation Sparsity</div>
+                <div class="stat-title">SNN Spike Sparsity Gating</div>
                 <div class="stat-val" id="snn-val">Active (LIF Gating)</div>
-                <div style="color: var(--muted); font-size: 11px; margin-top: 4px;">Sub-threshold noise filtered</div>
+                <div style="color: var(--muted); font-size: 11px; margin-top: 4px;">Sub-threshold noise suppressed</div>
             </div>
 
             <div class="stat-box">
-                <div>GPU Memory (VRAM)</div>
+                <div class="stat-title">Hardware Memory (VRAM)</div>
                 <div class="stat-val" id="vram-val">0.0 GB</div>
             </div>
 
             <div class="panel-header">Memorize Folder / Repository</div>
             <div class="tool-box">
-                <input type="text" id="learnDir" placeholder="Path, e.g. D:\\my_project">
+                <input type="text" id="learnDir" placeholder="Path, e.g. D:\\projects\\my_app">
                 <button class="action-btn" onclick="learnFolder()">Memorize Folder (0 Backprop)</button>
                 <div id="ingest-status" style="font-size: 11px; color: var(--muted);"></div>
             </div>
 
             <div class="panel-header">Memory Checkpoint (.synapse)</div>
             <div class="tool-box">
-                <input type="text" id="ckptPath" placeholder="Checkpoint path, e.g. memory.synapse">
+                <input type="text" id="ckptPath" placeholder="Path, e.g. memory.synapse">
                 <div style="display: flex; gap: 6px;">
                     <button class="sec-btn" style="flex:1;" onclick="saveMemory()">Save</button>
                     <button class="sec-btn" style="flex:1;" onclick="loadMemory()">Load</button>
@@ -544,17 +1033,33 @@ def chat_ui():
         </div>
 
         <div class="main">
-            <div class="messages" id="chat">
-                <div class="msg assistant">PopBrain Synaptic Engine is active. Model retrieves factual knowledge in-flight via lateral inhibition and SNN spike activation gating. All parameters and options can be controlled via CLI or this panel. Ask any question to verify recall.</div>
+            <div class="top-bar">
+                <div style="font-size: 14px; font-weight: 600; color: var(--text);">
+                    OpenAI Endpoint: <code style="color: var(--accent);">http://127.0.0.1:8088/v1</code> &nbsp;|&nbsp; Ollama: <code style="color: var(--synapse);">http://127.0.0.1:8088</code>
+                </div>
+                <button class="sec-btn" onclick="clearChat()">Reset Chat</button>
             </div>
+
+            <div class="chips-bar">
+                <span style="font-size: 12px; color: var(--muted); line-height: 24px;">Quick questions:</span>
+                <span class="chip" onclick="askChip('Привет, как тебя зовут?')">Привет, как тебя зовут?</span>
+                <span class="chip" onclick="askChip('Что такое синаптическая память PopBrain?')">Что такое синаптическая память PopBrain?</span>
+                <span class="chip" onclick="askChip('Какова архитектура Voronoi IVF?')">Архитектура Voronoi IVF?</span>
+            </div>
+
+            <div class="messages" id="chat">
+                <div class="msg assistant">PopBrain Synaptic Engine is active. Model retrieves factual knowledge in-flight via lateral inhibition and SNN spike activation gating. You can chat here directly, or connect Cherry Studio / LM Studio via OpenAI or Ollama endpoints.</div>
+            </div>
+
             <div class="input-bar">
-                <input type="text" id="userInput" placeholder="Ask question..." onkeydown="if(event.key==='Enter') send()">
+                <input type="text" id="userInput" placeholder="Ask a question..." onkeydown="if(event.key==='Enter') send()">
                 <button class="send-btn" onclick="send()">Send</button>
-                <button class="sec-btn" style="border-radius: 8px; padding: 0 16px;" onclick="clearChat()">Reset</button>
             </div>
         </div>
 
         <script>
+            let conversationHistory = [];
+
             async function updateStats() {
                 try {
                     const res = await fetch('/health');
@@ -563,10 +1068,24 @@ def chat_ui():
                     document.getElementById('mem-count').innerText = data.synaptic_memories.toLocaleString() + ' transitions';
                     document.getElementById('snn-val').innerText = data.snn_active ? 'Enabled (80%+ Sparsity)' : 'Disabled';
                     document.getElementById('vram-val').innerText = data.vram_gb + ' GB';
-                } catch(e){}
+                    document.getElementById('status-pill').innerText = 'ONLINE';
+                } catch(e){
+                    document.getElementById('status-pill').innerText = 'CONNECTING...';
+                }
             }
             setInterval(updateStats, 4000);
             updateStats();
+
+            function askChip(q) {
+                document.getElementById('userInput').value = q;
+                send();
+            }
+
+            function clearChat() {
+                conversationHistory = [];
+                const chat = document.getElementById('chat');
+                chat.innerHTML = '<div class="msg assistant">PopBrain Synaptic Engine is active. Conversation reset. Ask any question or specify code to verify.</div>';
+            }
 
             async function learnFolder() {
                 const path = document.getElementById('learnDir').value.trim();
@@ -630,14 +1149,6 @@ def chat_ui():
                 } catch(e) { st.innerText = 'Error: ' + e; }
             }
 
-            let conversationHistory = [];
-
-            function clearChat() {
-                conversationHistory = [];
-                const chat = document.getElementById('chat');
-                chat.innerHTML = '<div class="msg assistant">PopBrain Synaptic Engine is active. Conversation reset. Ask any question or specify code to verify.</div>';
-            }
-
             async function send() {
                 const inp = document.getElementById('userInput');
                 const text = inp.value.trim();
@@ -678,7 +1189,7 @@ def chat_ui():
                     if (diag.fired_steps > 0) {
                         badge = `<div class="synapse-hud">Synapse Active: ${diag.fired_steps} tokens | Sim: ${diag.max_cosine_similarity} | Sparsity: ${(diag.sparsity_ratio * 100).toFixed(1)}%</div><br>`;
                     }
-                    aMsg.innerHTML = badge + reply.replace(/\n/g, '<br>');
+                    aMsg.innerHTML = badge + reply.replace(/\\n/g, '<br>');
                 } catch(e) {
                     aMsg.innerText = 'Error: ' + e;
                 }
@@ -691,134 +1202,9 @@ def chat_ui():
     return HTMLResponse(content=html_content)
 
 
-@app.post("/v1/chat/completions")
-def chat_completions(req: ChatCompletionRequest):
-    global model, tokenizer, memory, snn_enabled, snn_threshold
-
-    # 1. Format prompt using model native chat template if available
-    try:
-        msgs = [{"role": msg.role, "content": msg.content} for msg in req.messages]
-        if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
-            prompt = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
-        else:
-            prompt = ""
-            for msg in req.messages:
-                prompt += f"<|im_start|>{msg.role}\n{msg.content}<|im_end|>\n"
-            prompt += "<|im_start|>assistant\n"
-    except Exception:
-        prompt = ""
-        for msg in req.messages:
-            prompt += f"<|im_start|>{msg.role}\n{msg.content}<|im_end|>\n"
-        prompt += "<|im_start|>assistant\n"
-
-    enc = tokenizer(prompt, return_tensors="pt").to(device)
-    initial_len = enc.input_ids.shape[1]
-
-    # 2. Build complete stop token set
-    stop_token_ids = set()
-    if tokenizer.eos_token_id is not None:
-        stop_token_ids.add(tokenizer.eos_token_id)
-    if tokenizer.pad_token_id is not None:
-        stop_token_ids.add(tokenizer.pad_token_id)
-
-    for stop_str in ["<|im_end|>", "<|endoftext|>", "</s>", "<|eot_id|>", "<eos>"]:
-        tid = tokenizer.convert_tokens_to_ids(stop_str)
-        if tid is not None and tid != tokenizer.unk_token_id:
-            stop_token_ids.add(tid)
-
-    gen_tokens = []
-    fired_steps = 0
-    max_similarity = 0.0
-    last_sparsity = 0.0
-    t0 = time.time()
-    past_kv = None
-    curr_input = enc.input_ids
-
-    with torch.no_grad():
-        for _ in range(req.max_tokens or 512):
-            out = model(curr_input, past_key_values=past_kv, use_cache=True, output_hidden_states=True)
-            past_kv = out.past_key_values
-            last_hidden = out.hidden_states[-1][0, -1, :].clone()
-
-            # A. SNN Event-Driven Spike Activation Gating
-            if snn_enabled:
-                mask = torch.abs(last_hidden) >= snn_threshold
-                zeros = (~mask).sum().item()
-                last_sparsity = zeros / last_hidden.numel()
-                last_hidden = last_hidden * mask
-
-            # B. PopBrain Hetero-Associative Modulation
-            if req.synaptic_modulation and memory and memory.num_memories > 0:
-                delta_h, sim = memory.compute_synaptic_modulation(last_hidden)
-                if sim > max_similarity:
-                    max_similarity = sim
-                if torch.norm(delta_h) > 1e-5:
-                    fired_steps += 1
-                    mod_hidden = (last_hidden + delta_h).unsqueeze(0).unsqueeze(0)
-                    logits = model.lm_head(mod_hidden)[0, 0, :]
-                else:
-                    logits = out.logits[0, -1, :]
-            else:
-                logits = out.logits[0, -1, :]
-
-            # C. Repetition Penalty
-            rep_pen = req.repetition_penalty if req.repetition_penalty is not None else default_rep_penalty
-            if rep_pen and rep_pen != 1.0 and len(gen_tokens) > 0:
-                for token_id in set(gen_tokens):
-                    if logits[token_id] < 0:
-                        logits[token_id] *= rep_pen
-                    else:
-                        logits[token_id] /= rep_pen
-
-            # D. Sampling / Greedy selection
-            if req.temperature and req.temperature > 0.0:
-                probs = torch.softmax(logits / req.temperature, dim=-1)
-                next_tok = torch.multinomial(probs, num_samples=1)
-            else:
-                next_tok = torch.argmax(logits).unsqueeze(0)
-
-            tok_id = next_tok.item()
-            if tok_id in stop_token_ids:
-                break
-
-            gen_tokens.append(tok_id)
-            curr_input = next_tok.unsqueeze(0)
-
-    dt = time.time() - t0
-    response_text = tokenizer.decode(gen_tokens, skip_special_tokens=True).strip()
-
-    return {
-        "id": f"chatcmpl-{int(time.time()*1000)}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": req.model,
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": response_text
-            },
-            "finish_reason": "stop" if (gen_tokens and gen_tokens[-1] in stop_token_ids) else "length"
-        }],
-        "usage": {
-            "prompt_tokens": initial_len,
-            "completion_tokens": len(gen_tokens),
-            "total_tokens": initial_len + len(gen_tokens)
-        },
-        "synaptic_diagnostics": {
-            "synaptic_active": req.synaptic_modulation,
-            "fired_steps": fired_steps,
-            "max_cosine_similarity": round(max_similarity, 4),
-            "sparsity_ratio": round(last_sparsity, 4),
-            "generation_time_sec": round(dt, 3),
-            "tokens_per_sec": round(len(gen_tokens) / max(0.001, dt), 2)
-        }
-    }
-
-
 def main():
     parser = argparse.ArgumentParser(
-        description="PopBrain Synaptic Server with SNN Spike Gating and IVF Memory Routing",
+        description="PopBrain Synaptic Server with SNN Spike Gating, OpenAI and Ollama APIs",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host address to bind server")
