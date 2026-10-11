@@ -110,6 +110,44 @@ ctest --test-dir build --output-on-failure
 
 ---
 
+## 📦 Download Prebuilt Binaries (GitHub Releases)
+
+Ready-to-use shared libraries and self-test executables are compiled and published automatically on the **[Releases Page](https://github.com/sshtome/llama.cpp/releases)**:
+
+* **Windows (x64):** `popbrain-synapse-windows-x64.zip` (contains `popbrain_synapse.dll`, `popbrain_synapse.lib`, `test_popbrain_synapse.exe`, and header `popbrain_synapse.h`).
+* **Linux (x64):** `popbrain-synapse-linux-x64.tar.gz` (contains `libpopbrain_synapse.so`, `test_popbrain_synapse`, and header `popbrain_synapse.h`).
+
+---
+
+## 🖥️ How to Use with LM Studio / llama-server
+
+### Method A: Native OpenAI-Compatible Sidecar (Available Now)
+The fastest way to experience PopBrain inside **LM Studio**, **Cherry Studio**, or **Open WebUI**:
+
+1. Start the PopBrain Synaptic Server:
+   ```bash
+   python popbrain/server.py --port 8088
+   ```
+2. In **LM Studio**:
+   - Go to **Developer / My Models / External Providers**.
+   - Add new endpoint: `http://127.0.0.1:8088/v1` (Model: `qwen2.5-coder-popbrain`).
+   - Open Chat and select `qwen2.5-coder-popbrain`.
+3. Model responses will be modulated live by synaptic memory (`fired_steps`, `max_similarity`) without bloating your context window.
+
+### Method B: C++ Shared Library Integration in `llama_decode()`
+To embed directly into custom forks of `llama.cpp` or `llama-server`:
+
+1. Copy `include/popbrain_synapse.h` to your `llama.cpp` include path.
+2. Link against `popbrain_synapse.lib` (Windows) or `-lpopbrain_synapse` (Linux).
+3. Inside `llama_decode()` right before the final `lm_head` projection:
+   ```c
+   // Apply zero-backprop in-flight synaptic modulation
+   popbrain_diagnostics diag;
+   popbrain_modulate_hidden(ctx->synaptic_mem, cur_hidden->data, &diag);
+   ```
+
+---
+
 ## 📖 C-API Usage Example
 
 ```c
@@ -153,6 +191,48 @@ int main() {
 
 ---
 
+## 🧪 Verification & Test Suite
+
+The library includes an automated C++ test suite verifying:
+- Ingestion of 50 multi-dimensional facts.
+- Spherical Voronoi clustering (IVF-4).
+- Exact target query firing ($100\%$ recall, cosine similarity $\approx 1.0$).
+- Strict distractor noise suppression ($0\%$ false positive firing).
+- Checkpoint persistence roundtrip (`.synapse`).
+
+Run tests locally:
+```bash
+# Windows
+.\build\Release\test_popbrain_synapse.exe
+
+# Linux
+./build/test_popbrain_synapse
+```
+
+Output:
+```
+======================================================
+PopBrain Synaptic Memory Engine C++ Self-Test Suite
+======================================================
+1. Initializing popbrain context (dim=128, clusters=4)...
+2. Ingesting 50 synthetic factual transitions...
+   Stored count: 50 (PASSED)
+3. Building Spherical Voronoi Index (IVF-4)...
+   Index build completed (PASSED)
+4. Testing exact matching query (Fact #42)...
+   Fired: 1 | Max Sim: 1.0000 | Margin: 0.7615 | Probed: 24 (PASSED)
+5. Testing distractor query (Orthogonal noise)...
+   Fired: 0 | Max Sim: 0.1507 | Margin: 0.0093 (PASSED)
+6. Testing checkpoint save & load...
+   Checkpoint persistence verification (PASSED)
+======================================================
+ALL POPBRAIN SYNAPSE C++ TESTS PASSED SUCCESSFULLY!
+======================================================
+```
+
+---
+
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
+

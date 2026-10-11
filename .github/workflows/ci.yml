@@ -1,8 +1,10 @@
-name: PopBrain Synaptic llama.cpp CI Matrix
+name: PopBrain Synaptic llama.cpp CI & Release Pipeline
 
 on:
   push:
     branches: [ "main" ]
+    tags:
+      - "v*"
   pull_request:
     branches: [ "main" ]
 
@@ -28,3 +30,69 @@ jobs:
 
     - name: Run Test Suite
       run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+
+    # Package Windows Artifacts
+    - name: Package Windows Artifacts
+      if: matrix.os == 'windows-latest'
+      run: |
+        mkdir dist
+        cp build/Release/popbrain_synapse.dll dist/
+        cp build/Release/popbrain_synapse.lib dist/
+        cp build/Release/test_popbrain_synapse.exe dist/
+        cp include/popbrain_synapse.h dist/
+        Compress-Archive -Path dist/* -DestinationPath popbrain-synapse-windows-x64.zip
+
+    # Package Linux Artifacts
+    - name: Package Linux Artifacts
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        mkdir dist
+        cp build/libpopbrain_synapse.so dist/
+        cp build/test_popbrain_synapse dist/
+        cp include/popbrain_synapse.h dist/
+        tar -czvf popbrain-synapse-linux-x64.tar.gz -C dist .
+
+    - name: Upload Windows Asset
+      if: matrix.os == 'windows-latest'
+      uses: actions/upload-artifact@v4
+      with:
+        name: popbrain-synapse-windows-x64
+        path: popbrain-synapse-windows-x64.zip
+
+    - name: Upload Linux Asset
+      if: matrix.os == 'ubuntu-latest'
+      uses: actions/upload-artifact@v4
+      with:
+        name: popbrain-synapse-linux-x64
+        path: popbrain-synapse-linux-x64.tar.gz
+
+  release:
+    name: Create GitHub Release
+    needs: build-and-test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Download Windows Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: popbrain-synapse-windows-x64
+
+    - name: Download Linux Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: popbrain-synapse-linux-x64
+
+    - name: Publish GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          popbrain-synapse-windows-x64.zip
+          popbrain-synapse-linux-x64.tar.gz
+        draft: false
+        prerelease: false
+        generate_release_notes: true
