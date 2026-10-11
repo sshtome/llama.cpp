@@ -122,6 +122,7 @@ run_windows.bat [OPTIONS]
 | `--modulation-strength`, `--alpha`, `-a` | `float` | `0.25` | Synaptic modulation scaling factor $\alpha$. Controls injection strength of hetero-associative vector. |
 | `--inhibition-th` | `float` | `0.82` | GABAergic lateral inhibition cosine similarity threshold $\theta_{\text{inhib}}$. Unlearned queries yield 0% activation. |
 | `--margin-th` | `float` | `0.015` | Differential margin threshold $\Delta_{\text{margin}} = s_1 - s_2$ to prevent ambiguous distractor collisions. |
+| `--repetition-penalty`, `--rep-penalty` | `float` | `1.15` | Repetition penalty factor to prevent degenerate cyclic token looping. |
 | `--clusters` | `int` | `128` | Number of Spherical Voronoi cortical partitions (IVF clusters) on unit hypersphere $\mathbb{S}^{D-1}$. |
 | `--nprobe` | `int` | `4` | Number of Voronoi cortical cells probed per token query. |
 | `--port`, `-p` | `int` | `8088` | TCP port for OpenAI-compatible API and Web Chat UI. |

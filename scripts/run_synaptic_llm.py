@@ -62,6 +62,7 @@ def main():
     parser.add_argument("--modulation-strength", "--alpha", "-a", type=float, default=0.25, help="Synaptic modulation strength alpha")
     parser.add_argument("--inhibition-th", type=float, default=0.82, help="Lateral inhibition threshold")
     parser.add_argument("--margin-th", type=float, default=0.015, help="Differential margin threshold")
+    parser.add_argument("--repetition-penalty", "--rep-penalty", type=float, default=1.15, help="Repetition penalty factor")
     parser.add_argument("--clusters", type=int, default=128, help="Number of Spherical Voronoi clusters")
     parser.add_argument("--nprobe", type=int, default=4, help="Number of Voronoi clusters to probe")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Compute device")
@@ -96,6 +97,8 @@ def main():
         cmd.extend(["--inhibition-th", str(args.inhibition_th)])
     if args.margin_th != 0.015:
         cmd.extend(["--margin-th", str(args.margin_th)])
+    if args.repetition_penalty != 1.15:
+        cmd.extend(["--repetition-penalty", str(args.repetition_penalty)])
     if args.clusters != 128:
         cmd.extend(["--clusters", str(args.clusters)])
     if args.nprobe != 4:

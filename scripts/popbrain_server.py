@@ -178,12 +178,14 @@ class ChatMessage(BaseModel):
     content: str
 
 
+default_rep_penalty: float = 1.15
+
 class ChatCompletionRequest(BaseModel):
     model: str = "popbrain-synaptic-llm"
     messages: List[ChatMessage]
     max_tokens: Optional[int] = 512
     temperature: Optional[float] = 0.0
-    repetition_penalty: Optional[float] = 1.15
+    repetition_penalty: Optional[float] = None
     synaptic_modulation: Optional[bool] = True
 
 
@@ -696,12 +698,13 @@ def chat_completions(req: ChatCompletionRequest):
                 logits = out.logits[0, -1, :]
 
             # C. Repetition Penalty
-            if req.repetition_penalty and req.repetition_penalty != 1.0 and len(gen_tokens) > 0:
+            rep_pen = req.repetition_penalty if req.repetition_penalty is not None else default_rep_penalty
+            if rep_pen and rep_pen != 1.0 and len(gen_tokens) > 0:
                 for token_id in set(gen_tokens):
                     if logits[token_id] < 0:
-                        logits[token_id] *= req.repetition_penalty
+                        logits[token_id] *= rep_pen
                     else:
-                        logits[token_id] /= req.repetition_penalty
+                        logits[token_id] /= rep_pen
 
             # D. Sampling / Greedy selection
             if req.temperature and req.temperature > 0.0:
@@ -766,6 +769,7 @@ def main():
     parser.add_argument("--modulation-strength", "--alpha", "-a", type=float, default=0.25, help="Synaptic modulation strength alpha")
     parser.add_argument("--inhibition-th", type=float, default=0.82, help="Lateral inhibition cosine similarity threshold")
     parser.add_argument("--margin-th", type=float, default=0.015, help="Differential margin gap threshold (top1 - top2)")
+    parser.add_argument("--repetition-penalty", "--rep-penalty", type=float, default=1.15, help="Repetition penalty factor")
     parser.add_argument("--clusters", type=int, default=128, help="Number of Spherical Voronoi cortical clusters")
     parser.add_argument("--nprobe", type=int, default=4, help="Number of Voronoi clusters probed per query")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Compute device")
@@ -773,6 +777,8 @@ def main():
     args = parser.parse_args()
 
     enable_spike = args.spike and not args.no_spike
+    global default_rep_penalty
+    default_rep_penalty = args.repetition_penalty
 
     init_runtime(
         model_path=args.model,
